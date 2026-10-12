@@ -1,0 +1,109 @@
+---
+title: "State"
+description: "Where every fact about a KineticVM device lives, which copy wins, and how plugins keep their own durable state."
+icon: "database"
+---
+
+A device runs offline, restarts, changes owners, and gets new software. To stay correct through all of that, KineticVM follows one rule: **every fact has exactly one canonical home**. Everything else is a cache or a derived view, and the canonical source wins on conflict.
+
+## The three layers
+
+<Tabs>
+  <Tab title="Onchain" icon="link">
+    The chain is canonical for everything about **who** and **how much**.
+
+    | Fact | Canonical source |
+    | --- | --- |
+    | Who owns the machine | `IdentityRegistry.ownerOf(agentId)` |
+    | Which device key is active | `KineticRegistry.activeDevice(agentId)` |
+    | Which agent a device belongs to | `KineticRegistry.deviceToAgent(device)` |
+    | Caps and pause | `DeviceVault.limitsOf(agentId)` |
+    | Vault balance and spend today | `DeviceVault.balanceOf`, `spentToday` |
+    | Allowed recipients | `DeviceVault.isAllowed(agentId, recipient)` |
+    | What the device attested | ERC-8004 `getValidationStatus(requestHash)` |
+
+    The runtime reads these at use time. It does not store an agent id, an owner, or caps of its own and act on them.
+  </Tab>
+  <Tab title="Device" icon="hard-drive">
+    The device is canonical for what only it can know.
+
+    | Fact | Where it lives |
+    | --- | --- |
+    | The device private key | `device.key` in the install directory, encrypted with the runtime secret store |
+    | Runtime configuration | `config.toml`. Secrets inside it are stored encrypted |
+    | Operation records | `records/operations.jsonl` and `records/operation-requests.txt` |
+    | Agent memory | SQLite memory backend |
+    | Plugin state | Encrypted `plugin-state.db`, one scope per plugin |
+    | Installed plugins, SOPs, skills | `plugins/`, `sops/`, `workspace/skills/` |
+  </Tab>
+  <Tab title="Off-device" icon="cloud">
+    Some facts live with services, and are never needed to operate the machine.
+
+    | Fact | Where it lives |
+    | --- | --- |
+    | Marketplace agent API key | Issued by the marketplace, stored on the device as an encrypted secret |
+    | Listings and purchases | The marketplace database |
+    | Listed datasets | IPFS (via Pinata), with the manifest pinned alongside |
+  </Tab>
+</Tabs>
+
+## Config values that describe the chain
+
+Some `[chain]` config values look like state but are not:
+
+- `chain.owner`, `chain.device_name`, `chain.per_tx_cap`, `chain.daily_cap` are **claim inputs**. They are used once, to build the claim link. After the claim, the vault and the Identity Registry are the truth. Changing `chain.per_tx_cap` after claiming does nothing to the vault. Use `/limits` instead.
+- `chain.registry`, `chain.vault`, `chain.attestor`, `chain.rpc_url`, `chain.chain_id` are **pointers**. They name where the canonical state is.
+
+<Warning>
+  If you change `chain.owner` after a claim, the device does not hand itself to that wallet. Ownership only moves by transferring the agent NFT. See [Ownership](/operate/ownership).
+</Warning>
+
+## The device key
+
+The device key is created the first time the runtime needs it, after Telegram pairing, not during quickstart. It is a secp256k1 key held behind the `DeviceSigner` interface, which has two operations: return the address, and sign a 32-byte digest. The software implementation:
+
+- encrypts `device.key` at rest with the runtime secret store,
+- zeroizes key bytes in memory after use,
+- never logs, prints, or serializes the key.
+
+A hardware secure element (NXP SE050) will implement the same interface, so contracts and tooling do not change when the key moves into silicon.
+
+<Note>
+  Deleting `device.key` does not free the agent. The registry still holds the old address as the active device. Use [rotate](/operate/ownership#rotate-the-device-key) to replace a key, or [revoke](/operate/ownership#revoke-a-device) to disable it.
+</Note>
+
+## Plugin state
+
+Plugins run as WebAssembly components and have no filesystem. When a plugin needs to remember something across calls and restarts, such as a counter, the last processed order id, or a calibration value, it uses the host **state** interface.
+
+```wit
+get: func(key: string) -> result<option<state-entry>, state-error>;
+put: func(key: string, value: list<u8>, expected-revision: option<u64>) -> result<u64, state-error>;
+delete: func(key: string, expected-revision: u64) -> result<_, state-error>;
+```
+
+<AccordionGroup>
+  <Accordion title="Scoped and encrypted" icon="lock">
+    Every value is scoped to the exact plugin package, capability, and binding that wrote it. One plugin cannot read another's keys. The SQLite file stores only opaque locators and encrypted envelopes, and is created owner-only (`0600`).
+  </Accordion>
+  <Accordion title="Compare-and-swap revisions" icon="git-compare">
+    Each value has a revision. `put` with `none` only succeeds if the key does not exist. `put` with `some(revision)` only succeeds if the current revision matches. A mismatch returns `conflict`. Revisions are never reused, even after a key is deleted and recreated, so a stale writer can never overwrite a newer value.
+  </Accordion>
+  <Accordion title="Keys and quotas" icon="ruler">
+    Keys are 1 to 128 bytes of ASCII letters, digits, `_`, `-`, or `.`. Keys are not paths. Each plugin may hold up to 1,024 entries, 64 KiB per value, and 8 MiB in total. Going over returns `quota-exceeded`.
+  </Accordion>
+  <Accordion title="Permissions" icon="shield">
+    Reading requires the `state_read` permission and writing requires `state_write`, both declared in the plugin's `manifest.toml`. Without them, calls return `access-denied`.
+  </Accordion>
+</AccordionGroup>
+
+| Error | Meaning |
+| --- | --- |
+| `invalid-key` | The key does not follow the portable key syntax. |
+| `access-denied` | The plugin lacks `state_read` or `state_write`. |
+| `not-found` | No value for that key (from `delete`). |
+| `conflict` | The expected revision did not match. |
+| `quota-exceeded` | The write would exceed a host quota. |
+| `unavailable` | Called outside a tool call, budget exhausted, or storage failed closed. |
+
+Plugin state is private working memory. It is never attested and never listed. For data that should be provable and sellable, use [operation records](/concepts/records).

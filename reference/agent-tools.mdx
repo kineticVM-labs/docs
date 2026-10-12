@@ -1,0 +1,61 @@
+---
+title: "Agent tools"
+description: "The tools a KineticVM agent uses to read its identity, spend, attest, sell records, and run procedures."
+icon: "wrench"
+---
+
+These tools are available when `[chain]` is enabled and the device is claimed, except the SOP tools, which load with the SOP engine. The model calls them. You can also ask for them in the paired Telegram chat. `shell`, `file_write`, `file_edit`, and `vault_pay` raise an approval card on a chat channel. The others in this list do not.
+
+## monad_identity
+
+Reads the chain and reports this device.
+
+Unclaimed, the result is the device address and the claim text `kinetic:<address>`. Claimed, it is the agent id, owner, device address, both caps, and whether spending is paused. The runtime does not answer from a cached agent id.
+
+## vault_status
+
+Reads `limitsOf`, `balanceOf`, and `spentToday` for this agent. The result is the balance, spend in the current window, both caps, and the pause flag, in MON.
+
+## vault_pay
+
+Pays a recipient from the vault. Arguments:
+
+| Argument | Meaning |
+| --- | --- |
+| `recipient` | An address the owner has allowlisted |
+| `amount` | MON, such as `0.02` |
+
+The vault still enforces pause, the allowlist, both caps, and the balance. This tool always asks for approval on a chat channel before it runs. A payment that the vault rejects comes back as a chain error, not as a spent balance.
+
+## monad_attest
+
+Records a completed operation. Arguments:
+
+| Argument | Meaning |
+| --- | --- |
+| `action` | Short name, such as `vend`. The chain stores `keccak256` of this string. |
+| `params` | A string. With a record schema, it must be one JSON object of the declared fields. |
+| `request_uri` | A URI stored inside the signed proof, such as `kinetic://sop/vend`. |
+
+When `[records]` has fields, the host canonicalizes `params` into one line, signs those bytes, submits the attestation, and appends the line only after the transaction succeeds. The tool result includes the transaction hash and the request hash. With no schema, it signs `params` as given and stores nothing.
+
+Actuator tools `gpio_write`, `gpio_rpi_write`, `gpio_rpi_blink`, and `set_device` are attested automatically after they succeed, with `request_uri` `kinetic://actuator/<tool>`. Plugin tools are not.
+
+## sell_data
+
+Lists attested operation records on the marketplace. Arguments: `title`, `summary`, `description`, `machine_type`, `license`, and `price_mon`. The rules and the file checks are in [Data listing](/marketplace/listing). The model is told to ask the owner for any field it is not sure of, and not to guess the price.
+
+The tool requires a claimed device on chain id 10143 and a `marketplace.key`. It returns the public listing URL.
+
+## Procedures
+
+| Tool | What it does |
+| --- | --- |
+| `sop_list` | Loaded SOPs, with triggers, priority, step count, and active runs. |
+| `sop_execute` | Starts a SOP by name. Returns the run id and the first step. |
+| `sop_status` | One run, the runs of one SOP, or all active runs. |
+| `sop_advance` | Reports the current step's result and moves the run on. |
+| `sop_approve` | Approves a step that is waiting. |
+| `sop_workshop` | Proposes and applies edits to SOP files. Apply writes only after an explicit action. |
+
+Hardware tools (`gpio_read`, `gpio_write`, and the Raspberry Pi variants) are documented in [Hardware and firmware](/build/hardware).

@@ -1,0 +1,141 @@
+---
+title: "Telegram owner commands"
+description: "Run a claimed device from the paired Telegram chat: check status, pause, change caps, approve recipients, fund, withdraw, and sell data."
+icon: "send"
+---
+
+Telegram is the device's control surface. The paired chat can ask the device anything in plain language, and it can use a fixed set of **owner commands** that read and change onchain state.
+
+<Warning>
+  Telegram is a convenience, not the authority. Pairing a chat proves you control the Telegram account the device trusts. It does **not** prove you own the agent. Every command that loosens a limit still needs a signature from the owner wallet, checked by the vault contract.
+</Warning>
+
+## Pairing
+
+The first time `kinetic start` runs, the terminal prints a one-time code:
+
+```text
+🔐 Telegram pairing required. One-time bind code: 482913
+   Send `/bind <code>` from your Telegram account.
+```
+
+Send `/bind 482913` to your bot. The device replies `✅ Telegram paired successfully!` and stores your Telegram user id as the only peer it serves. Owner commands from any other chat get:
+
+```text
+This chat is not paired with the device. Send /bind and the code from the terminal.
+```
+
+The old `/link` command is retired. The paired chat does not need it.
+
+## The commands
+
+<ResponseField name="/status" type="read">
+  Shows the agent id, device and owner addresses, vault balance, spend in the current window, both caps, pause state, and explorer links for the five most recent attestations.
+
+  ```text
+  Agent 2005
+  Device 0x5c7e…91a2
+  Owner 0x6477…7f77
+  Vault 2.4 MON
+  Spent today 0.12 MON
+  Per-transaction cap 0.05 MON
+  Daily cap 1 MON
+  Paused no
+  Recent attestations:
+  https://testnet.monadvision.com/tx/0x…
+  ```
+</ResponseField>
+
+<ResponseField name="/limits" type="read or change">
+  With no arguments, shows the current caps and pause state. With two MON amounts, `/limits <per-tx> <daily>`, proposes new caps. See [Changing caps](#changing-caps).
+</ResponseField>
+
+<ResponseField name="/pause" type="owner wallet">
+  Replies with the exact call to make from the owner wallet: `pause(<agentId>)` on the vault. The device cannot pause on your behalf, by design: stopping a device must never depend on the device.
+</ResponseField>
+
+<ResponseField name="/resume" type="signed">
+  Returns an EIP-712 digest for `Unpause`. Sign it with the owner wallet and send `/resume <deadline> <signature>`. The device relays the transaction.
+</ResponseField>
+
+<ResponseField name="/approve" type="signed">
+  `/approve <address>` returns an EIP-712 digest for `AllowRecipient`. Sign it and send `/approve <address> <deadline> <signature>`. The device relays the transaction and the address can now receive vault payments.
+</ResponseField>
+
+<ResponseField name="/deposit" type="link">
+  Replies with a link to the deposit page for this agent's vault account.
+</ResponseField>
+
+<ResponseField name="/withdraw" type="link">
+  Replies with a link to the withdraw page. Connect the owner wallet there to withdraw.
+</ResponseField>
+
+<ResponseField name="/sell_data" type="conversation">
+  Starts a data listing. The device asks for any listing detail it is not sure of, then lists its operation records on the marketplace. See [Data listing](/marketplace/listing).
+</ResponseField>
+
+## The signing flow
+
+Commands that **loosen** what the device can do use a two-message flow. The device does the chain work and pays the gas. The owner wallet only signs.
+
+<Steps>
+  <Step title="Ask">
+    Send the command without a signature, for example `/approve 0x2b1f…c9d0`.
+  </Step>
+  <Step title="Receive the digest">
+    The device reads the vault's `loosenNonce`, sets a deadline one hour after the latest block, computes the EIP-712 digest on the vault, and replies:
+
+    ```text
+    Sign this EIP-712 digest with the owner wallet. A personal signature will be rejected.
+    Then send this command with the signature in place of SIGNATURE:
+    /approve 0x2b1f…c9d0 1791390000 SIGNATURE
+    Digest 0x9d4c…e1a7
+    Deadline 1791390000
+    ```
+  </Step>
+  <Step title="Sign">
+    Sign the 32-byte digest itself, with no message prefix. For example, with Foundry:
+
+    ```bash
+    cast wallet sign --no-hash 0x9d4c…e1a7 --account owner
+    ```
+  </Step>
+  <Step title="Send it back">
+    Paste the command with the signature in place of `SIGNATURE`. The device submits the transaction and replies with its hash, for example `0x2b1f…c9d0 can receive vault payments. Transaction 0x….`
+  </Step>
+</Steps>
+
+<Note>
+  A digest is valid once and only until its deadline. If another signed change lands first, the nonce moves and the old digest stops working. Ask again for a fresh one.
+</Note>
+
+If the signature does not recover to the current owner, the vault reverts and the device replies:
+
+```text
+The vault rejected that transaction. Sign the digest as EIP-712 typed data, not a personal signature, and send the command again.
+```
+
+<Tip>
+  You can always skip the relay. Any loosening function called **directly from the owner wallet** is authorized by the transaction itself, and the signature argument is ignored. For example, call `unpause(<agentId>, 0, 0x)` on the vault from the owner wallet.
+</Tip>
+
+## Changing caps
+
+`/limits <per-tx> <daily>` compares the proposal with the current caps:
+
+| Proposal | What happens |
+| --- | --- |
+| Both caps the same as now | `Those caps match the current limits.` |
+| Both lower or equal, at least one lower | The device replies with the `tightenCaps(agentId, perTx, daily)` call to make from the owner wallet, with amounts in wei. |
+| Both higher or equal, at least one higher | The device returns a `LoosenCaps` digest to sign, and you send `/limits <per-tx> <daily> <deadline> <signature>`. |
+| One up, one down | Refused. Make two changes. |
+
+## Talking to the device
+
+Anything that is not an owner command goes to the agent. You can ask it to check its identity, report the vault, or pay an allowlisted address within its caps. Tool calls that arrive over a chat channel, such as a vend, a plugin tool, a pin write, or an attestation, run without an approval card. Four tools always raise one first: `shell`, `file_write`, `file_edit`, and `vault_pay`.
+
+When the vault cannot cover the device's gas, the device posts a message to the paired chat:
+
+```text
+The vault does not have enough MON for device gas. Fund it: https://vault-deposit.kineticvm.xyz?address=0x7710…4EE5&agent=2005
+```

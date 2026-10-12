@@ -1,0 +1,115 @@
+---
+title: "Marketplace API"
+description: "The HTTP endpoints a device and a buyer use to list records, verify them, and unlock a purchase."
+icon: "braces"
+---
+
+The site origin is `https://marketplace.kineticvm.xyz`. Browser flows use a session cookie after Google sign-in. The device uses a bearer key and does not use the cookie.
+
+Errors are JSON with an `error` string and an HTTP status. A successful JSON body is the object described on each route.
+
+## Issue an agent key
+
+Sign in first. Then create a challenge and sign the message it returns.
+
+```bash
+curl -X POST https://marketplace.kineticvm.xyz/api/marketplace/challenges \
+  -H 'content-type: application/json' \
+  -b 'kvm_session=…' \
+  -d '{"kind":"key","agentId":"2005","wallet":"0x6477…7f77"}'
+```
+
+The response is `{ "id", "message" }`. `message` is:
+
+```text
+KineticVM marketplace
+Issue agent key
+wallet: 0x…
+chain: 10143
+agent: 2005
+nonce: …
+```
+
+Sign that text with the wallet (a personal signature). Post the challenge id and the signature:
+
+```bash
+curl -X POST https://marketplace.kineticvm.xyz/api/marketplace/keys \
+  -H 'content-type: application/json' \
+  -b 'kvm_session=…' \
+  -d '{"challengeId":"…","signature":"0x…"}'
+```
+
+On success, status 201, the body includes `key`, `id`, `agentId`, `prefix`, and `device`. `key` starts with `kvm_` and is shown once. The route reads `ownerOf`. If the signer is not the owner, the status is 403. Keys whose wallet no longer holds the NFT are revoked as part of this call.
+
+`GET /api/marketplace/keys` lists the account's keys and does not return the secrets.
+
+## List from a device
+
+`POST /api/agent/listings`
+
+Header: `Authorization: Bearer kvm_…`
+
+Multipart fields:
+
+| Field | Required | Rule |
+| --- | --- | --- |
+| `title` | yes | At most 80 characters, no line breaks |
+| `summary` | yes | At most 180 characters, no line breaks |
+| `description` | yes | 20 to 8,000 characters |
+| `machineType` | yes | `vending`, `arm`, `drone`, `amr`, `sensor`, `humanoid`, `other` |
+| `license` | yes | `research`, `commercial`, `audit` |
+| `priceMon` | yes | MON greater than zero |
+| `manifest` | yes | JSON file, see below |
+| `data` | yes | JSONL file of the signed lines |
+| `image` | no | JPEG, PNG, or WebP cover |
+
+The manifest is version 1, `chainId` 10143, `agentId` matching the key, and `rows` of `{ "paramsHash", "requestHash" }`. Each `paramsHash` must be keccak256 of the matching data line. At most 5,000 rows and 20 MB per file.
+
+Status 201:
+
+```json
+{ "slug": "lobby-vend-log", "url": "/marketplace/lobby-vend-log", "status": "listed" }
+```
+
+The response has no CIDs. The device turns `url` into an absolute link on the marketplace origin. Before pinning, the route checks the key, re-reads `ownerOf`, and refuses the listing if that wallet no longer holds the agent. Attestations are checked by the verify route, not by this one.
+
+## Verify
+
+`POST /api/marketplace/listings/{slug}/verify`
+
+No body. The route loads the pinned manifest and calls `getValidationStatus` for every row. A row must belong to the listing's agent, name the Kinetic attestor as validator, have response `100`, have `responseHash` equal to `paramsHash`, and use the tag `kinetic-action` when a tag is set.
+
+```json
+{
+  "preview": false,
+  "total": 128,
+  "rows": [{ "index": 1, "paramsHash": "0x…", "requestHash": "0x…" }]
+}
+```
+
+`rows` is the first eight. `preview: true` means the slug is a sample listing and the rows were not read from Monad.
+
+## Purchase
+
+`POST /api/marketplace/listings/{slug}/purchase`
+
+Session cookie required. JSON body: `{ "txHash": "0x…", "signature": "0x…" }`.
+
+The signature is a personal signature over:
+
+```text
+KineticVM marketplace
+Unlock
+listing: <slug>
+tx: 0x…
+```
+
+The transaction must be confirmed on Monad testnet, from the signer, to the listing's payout address, and at least the listing price. A transaction hash can be used once.
+
+The response is `{ "access": { "dataCid", "manifestCid", "dataUrl", "manifestUrl" } }`. Those URLs are also available to the signed-in owner of the listing, and to a buyer who already purchased, from:
+
+`GET /api/marketplace/listings/{slug}/file?part=data`
+
+`GET /api/marketplace/listings/{slug}/file?part=manifest`
+
+`part` is required. The response is the file as a download.

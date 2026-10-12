@@ -1,0 +1,27 @@
+---
+title: "Changelog"
+description: "What shipped in the 0.8 device releases."
+icon: "scroll-text"
+---
+
+Releases are git tags on this repository. The binary version is `0.8.13`.
+
+<Update label="0.8.13" description="2026-10-12">
+  Published links point at the kineticVM-labs repository, and the README shows the homepage banner.
+</Update>
+
+<Update label="0.8.12" description="2026-10-12">
+  A device can list its attested operation records on the marketplace. `/sell_data` asks the owner for the listing details and the `sell_data` tool uploads the operations file plus a manifest.
+</Update>
+
+<Update label="0.8.11" description="2026-10-09">
+  Plugin commands ship in the device binary, so a device can install and inspect packages without a separate toolchain beyond what `kinetic build` needs on the machine that compiles.
+</Update>
+
+<Update label="0.8.10" description="2026-10-09">
+  Plugin packages can export several tools, scaffold from `kinetic plugin create`, compile with `kinetic build`, and install their procedure beside the component. Operation records store the canonical line a device already attests.
+</Update>
+
+<Update label="0.8.9" description="2026-10-07">
+  A device refills its own gas from the vault, up to the caps and the 5 MON ceiling, and tells the owner when the vault cannot cover it.
+</Update>

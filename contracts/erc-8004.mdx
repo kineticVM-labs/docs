@@ -1,0 +1,59 @@
+---
+title: "ERC-8004"
+description: "Which parts of the agent identity standard KineticVM uses, and which parts this deployment leaves alone."
+icon: "landmark"
+---
+
+[ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) is a standard for onchain agents. It defines three registries: Identity, Reputation, and Validation. KineticVM uses the first and the third. An agent minted here is an ERC-721 in the same Identity Registry as every other ERC-8004 agent on Monad testnet, so wallets, explorers, and other agents can see it without knowing about KineticVM.
+
+The registry addresses are on [Deployments](/contracts/deployments).
+
+## Identity Registry
+
+`register(agentURI)` mints an NFT to the caller and returns the agent id. KineticRegistry calls it during `claim`, receives the NFT, and transfers it to the owner in the same transaction.
+
+The URI written by the claim page is a data URI whose JSON is the device name and the device address:
+
+```json
+{"name": "Lobby vending machine", "device": "0x5c7e…91a2"}
+```
+
+Ownership is `ownerOf(agentId)`. That is the only owner KineticVM trusts. Transferring the NFT is how a machine is sold. See [Ownership](/operate/ownership).
+
+Two approval functions matter:
+
+| Call | Who | Why |
+| --- | --- | --- |
+| `setApprovalForAll(KineticAttestor, true)` | The owner, after claim | Lets the attestor open a validation request. Without it, `attest` reverts `NotOperator`. |
+| `approve` or `setApprovalForAll` for the device key | Nobody in this protocol | The device key is never an operator on its own identity. No KineticVM contract grants it. |
+
+## Validation Registry
+
+A validation is a request and a response, keyed by `requestHash`.
+
+```solidity
+validationRequest(validatorAddress, agentId, requestURI, requestHash)
+validationResponse(requestHash, response, responseURI, responseHash, tag)
+```
+
+ERC-8004 lets the agent owner or an operator open the request, and only the named validator answer it. KineticAttestor does both in one transaction: it is the operator, and it is the validator it names. The response it writes is `100`, the response hash is the keccak256 of the signed parameters, and the tag is `kinetic-action`.
+
+Anyone reads the result with `getValidationStatus(requestHash)`, which returns the validator, agent id, response, response hash, tag, and last update. That read is what [buyer verification](/marketplace/verification) does for every row.
+
+## Reputation Registry
+
+The Reputation registry is deployed on Monad testnet and KineticVM does not call it. `KineticAttestor` never calls `giveFeedback`. A feedback score is a different claim from a device-signed action record, and this deployment does not mix them.
+
+## What KineticVM does not ask the standard to do
+
+<AccordionGroup>
+  <Accordion title="Hold the device's money" icon="vault">
+    ERC-8004 has an agent wallet flow, including `setAgentWallet` with its own EIP-712 signature. KineticVM spending goes through [DeviceVault](/contracts/device-vault) instead, because the vault is where caps, the allowlist, and pause live.
+  </Accordion>
+  <Accordion title="Prove a physical action" icon="cpu">
+    A validation response of `100` is the attestor's statement that the bound device key signed the record. The standard does not, and KineticVM does not, treat that as proof the hardware moved.
+  </Accordion>
+  <Accordion title="Bind a device key" icon="key-round">
+    The standard identifies the agent. `KineticRegistry` is the extra contract that says which key may speak for it, and that drops that key when the NFT moves.
+  </Accordion>
+</AccordionGroup>

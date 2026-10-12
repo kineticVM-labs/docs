@@ -1,0 +1,47 @@
+---
+title: "Smart contracts"
+description: "The three KineticVM contracts, the ERC-8004 registries they sit on, and what each one is allowed to do."
+icon: "file-code"
+---
+
+KineticVM on Monad is four addresses a device talks to, plus two ERC-8004 registries it shares with every other agent on the chain. The device never holds a special role in any of them. It holds a key that the registry has bound to an agent, and every contract checks that binding before it accepts a signature.
+
+| Contract | Job |
+| --- | --- |
+| [KineticRegistry](/contracts/kinetic-registry) | Mints the agent NFT into the owner's wallet and binds one device key to it. |
+| [DeviceVault](/contracts/device-vault) | Holds MON per agent and enforces caps, the allowlist, and pause. |
+| [KineticAttestor](/contracts/kinetic-attestor) | Checks a device-signed action proof and writes an ERC-8004 validation. |
+| [ERC-8004 registries](/contracts/erc-8004) | The public identity and validation registries. KineticVM does not deploy these. |
+
+Addresses, deployment transactions, and explorers are on [Deployments](/contracts/deployments).
+
+## How a claim uses all three
+
+<Steps>
+  <Step title="KineticRegistry.claim">
+    Mints an ERC-8004 agent to the caller, checks the device's claim ticket, and calls `DeviceVault.bindLimits` with the starting caps.
+  </Step>
+  <Step title="IdentityRegistry.setApprovalForAll">
+    The owner approves `KineticAttestor`. The registry cannot do this. It only holds the NFT for the duration of `claim`.
+  </Step>
+  <Step title="DeviceVault.deposit">
+    Anyone can fund the agent. The device spends through `pay` and `topUpGas`. The owner recovers funds with `withdraw`.
+  </Step>
+  <Step title="KineticAttestor.attest">
+    The device signs an action proof. The attestor checks the active device and the owner approval, then writes response `100` to the Validation Registry.
+  </Step>
+</Steps>
+
+## Rules that hold in every contract
+
+- The owner is always `ownerOf` on the Identity Registry. KineticVM does not keep a second copy that can drift.
+- The device key is never the NFT owner, and no KineticVM contract approves it as an operator.
+- Raising a cap, adding a recipient, or unpausing requires the owner wallet or an EIP-712 signature from it. Tightening and pausing are direct owner calls.
+- `activeDevice` reverts when the NFT has moved, so a sold machine cannot keep spending on the previous owner's terms.
+- The attestor never calls `giveFeedback`. Reputation is a separate ERC-8004 surface, and this deployment does not write it.
+
+<Warning>
+  These contracts are deployed on Monad testnet and have not been audited. Treat balances as testnet MON. Mainnet is refused by the runtime until a mainnet deployment exists.
+</Warning>
+
+The source is `contracts/src`, compiled with Solidity 0.8.28 and the optimizer at 200 runs. Tests live next to the contracts in `contracts/test`.

@@ -1,0 +1,108 @@
+---
+title: "Hardware and firmware"
+description: "How a board talks to the device over serial, which commands it must answer, and how a local event starts a procedure."
+icon: "microchip"
+---
+
+The KineticVM runtime does not flash pins itself when the machine is a separate board. It speaks one JSON line per message over serial at **115200 baud**. The board answers commands and can also speak first, which is how a keypad, a button, or a scale starts a [SOP](/build/sops).
+
+## The line protocol
+
+Every message is one JSON object followed by a newline.
+
+<Tabs>
+  <Tab title="Command" icon="arrow-right">
+    The runtime sends a request and waits for the matching `id`.
+
+    ```json
+    {"id":"1","cmd":"gpio_write","args":{"pin":13,"value":1}}
+    ```
+
+    ```json
+    {"id":"1","ok":true,"result":"done"}
+    ```
+
+    A failure uses the same `id` with `"ok": false` and an `error` string.
+  </Tab>
+  <Tab title="Event" icon="radio">
+    The board sends this when something happens locally. There is no `id`, because nobody asked.
+
+    ```json
+    {"event":"message","signal":"keypad","text":"1234"}
+    ```
+
+    `signal` is a token: a letter or `_`, then letters, digits, `_`, or `-`, at most 32 characters. `text` is at most 512 bytes. The runtime turns this into a peripheral trigger on the topic `board/signal`, with `text` as the payload.
+  </Tab>
+</Tabs>
+
+The commands the reference firmware understands:
+
+| `cmd` | Arguments | What it does |
+| --- | --- | --- |
+| `ping` | none | Liveness check. |
+| `capabilities` | none | Returns the pins and features this board exposes. |
+| `gpio_read` | `pin` | Reads one pin. |
+| `gpio_write` | `pin`, `value` | Drives one pin. `value` is `0` or `1`. |
+
+Unknown commands are ignored. The ESP32 starter in `firmware/esp32` answers these four and exposes pins 2 and 13 as outputs.
+
+## Sending an event
+
+The ESP32 main loop calls `take_host_message` whenever the serial line is idle. The starter returns nothing. Replace that function so it returns a message once per real event:
+
+```rust firmware/esp32/src/main.rs
+fn take_host_message() -> Option<HostMessage> {
+    let digits = keypad_if_enter_pressed()?;
+    let mut signal = String::new();
+    let mut text = String::new();
+    signal.push_str("keypad").ok()?;
+    text.push_str(digits.as_str()).ok()?;
+    Some(HostMessage { signal, text })
+}
+```
+
+Returning the same message on every idle poll sends it again on every poll. Return it once, then return `None` until the next event.
+
+A SOP matches it like this:
+
+```toml SOP.toml
+[[triggers]]
+type = "peripheral"
+board = "esp32"
+signal = "keypad"
+```
+
+`board` is the name in `[peripherals]`, not the chip. `signal` is the name your firmware chose.
+
+## Boards the daemon listens for
+
+With no `[peripherals]` table, the daemon opens four serial boards:
+
+| Board | Path |
+| --- | --- |
+| `esp32` | `/dev/ttyUSB0` |
+| `pico` | `/dev/ttyACM0` |
+| `nucleo` | `/dev/ttyACM0` |
+| `arduino` | `/dev/ttyACM0` |
+
+An explicit `boards` list, including an empty one, replaces that default. Add a board from the CLI:
+
+```bash
+kinetic hardware discover
+kinetic hardware introspect /dev/ttyUSB0
+kinetic peripheral list
+kinetic peripheral add esp32 /dev/ttyUSB0
+kinetic peripheral add rpi-gpio native
+```
+
+`native` is local GPIO on the device itself, used for `rpi-gpio`. Serial boards get the tools `gpio_read` and `gpio_write`. A Raspberry Pi GPIO board gets `gpio_rpi_read`, `gpio_rpi_write`, `gpio_rpi_blink`, and `rpi_system_info`.
+
+## What gets attested
+
+When `[chain]` is enabled, a successful call to `gpio_write`, `gpio_rpi_write`, `gpio_rpi_blink`, or `set_device` is attested automatically, with `requestURI` `kinetic://actuator/<tool>` and the tool arguments as the parameters. A failed call is not attested.
+
+<Warning>
+  Plugin tools are not wrapped. If `vend` drives a motor by calling `gpio_write` itself, inside the Wasm guest, that call never reaches the host tool and is not attested. Call `monad_attest` from the SOP after the operation completes, with the [record](/concepts/records) you want to keep.
+</Warning>
+
+The reference firmware trees live under `firmware/`: `esp32`, `pico`, `nucleo`, `arduino`, and `kinetic-fw-protocol`, which is the shared parser for commands and host messages.

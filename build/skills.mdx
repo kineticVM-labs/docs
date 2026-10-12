@@ -1,0 +1,108 @@
+---
+title: "Skills"
+description: "Markdown guidance the model reads so it knows when and how to use your tools, without becoming code itself."
+icon: "book-open"
+---
+
+A **skill** is a `SKILL.md` file. The runtime loads its frontmatter into the model prompt so the model can decide when the skill applies, then reads the body when it needs the instructions. Skills do not run. They do not call tools, and they are not attested. The [SOP](/build/sops) is the procedure. The [plugin](/build/plugins) is the code. The skill is the explanation that sits beside both.
+
+## Where skills live
+
+The runtime loads skills from several places and keeps the first one when names collide:
+
+| Origin | Location | Name the model sees |
+| --- | --- | --- |
+| Agent workspace | `~/.kinetic/agents/<alias>/workspace/skills/<name>/SKILL.md` | `<name>` |
+| Skill bundle | The bundle directory from `kinetic skills bundle list`. `kinetic skills add` writes here. | The skill name |
+| Plugin package | `skills/<name>/SKILL.md` inside an installed plugin | `plugin:<package>/<name>` |
+| Open skills and registries | Synced catalogs | The skill name |
+
+A skill shipped inside a plugin is namespaced, so it cannot hide a workspace skill of the same name. `kinetic skills list --agent device` shows exactly what the `device` agent loads.
+
+## SKILL.md
+
+```markdown SKILL.md
+---
+name: vending
+description: Operate a four-slot vending machine. Use when a customer asks to buy something or a keypad code arrives.
+license: MIT
+author: kineticvm
+version: 0.1.0
+category: machines
+tags:
+  - vending
+always: false
+---
+
+A purchase has three parts. Look the code up with `check_code`. Drive the slot with `gpio_write`. After the motor finishes, call `monad_attest` with action `vend` and a record containing `product`, `slot`, and `price_mon`.
+
+Never put the keypad code, a chat id, or a wallet into the record.
+```
+
+<ParamField path="name" type="string" required>
+  Lowercase letters and hyphens. This is the identifier `read_skill` uses.
+</ParamField>
+
+<ParamField path="description" type="string" required>
+  What the skill does and when to use it, written in the third person. The model sees this during discovery, so write it as a routing hint, not a summary of the body.
+</ParamField>
+
+<ParamField path="license" type="string">
+  An SPDX identifier, such as `MIT`.
+</ParamField>
+
+<ParamField path="author" type="string">
+  A handle or organization.
+</ParamField>
+
+<ParamField path="version" type="string" default="0.1.0">
+  SemVer. Scaffolded skills start at `0.1.0`.
+</ParamField>
+
+<ParamField path="category" type="string">
+  A grouping used by skill registries, such as `machines` or `ops`.
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  Free-form labels. A `slash` tag exposes the skill as a slash command on channels that support one.
+</ParamField>
+
+<ParamField path="always" type="boolean" default="false">
+  When true, the full instructions stay in the system prompt even in compact skill mode. Use this for a short policy the model must not be able to skip. Leave it false for ordinary machine guidance, which the model loads with `read_skill` when the description matches.
+</ParamField>
+
+The body is ordinary Markdown. Tell the model which tools to call, in what order, and what must never appear in a record.
+
+## Create and install
+
+```bash
+kinetic skills add vending \
+  --description "Operate a four-slot vending machine." \
+  --category machines
+
+kinetic skills edit vending
+kinetic skills audit vending
+kinetic skills test vending
+kinetic skills remove vending
+```
+
+`kinetic skills add` writes `SKILL.md` plus `scripts/`, `references/`, and `assets/`. Pass `--no-scaffold` to skip the extra directories. The name must be lowercase with hyphens, and the description is required.
+
+To install a skill someone else wrote:
+
+```bash
+kinetic skills install ./path/to/skill
+kinetic skills install https://github.com/org/repo --skill vending
+```
+
+`kinetic skills audit` checks a directory or an installed name before you trust it. A skill whose audit fails is dropped at load time and does not reach the model.
+
+## Skills inside a plugin package
+
+`kinetic plugin create` writes `skills/<package>/SKILL.md`. Keep it when the model needs extra guidance, and delete the directory and the `skill` capability from `manifest.toml` when the SOP and tool descriptions are enough on their own.
+
+After `kinetic plugin install`, the runtime discovers that file from the installed plugin and registers it as `plugin:<package>/<skill>`.
+
+<Tip>
+  Put the hard sequence in the SOP. Put the judgment in the skill: which questions to ask, which fields belong in a record, and what to refuse.
+</Tip>

@@ -1,0 +1,122 @@
+---
+title: "Funding and gas"
+description: "Put MON in a device's vault, understand how the device pays its own gas, and get funds back out."
+icon: "coins"
+---
+
+A claimed device has two pools of MON, and they serve different purposes.
+
+<Columns cols={2}>
+  <Card title="The vault account" icon="vault">
+    Held by `DeviceVault` under the agent id. This is the device's budget. Every MON that leaves it passes the caps, the allowlist, and the pause.
+  </Card>
+  <Card title="The device address" icon="cpu">
+    A normal balance on the device key's address. It only pays transaction fees. The device refills it from the vault, never above 5 MON.
+  </Card>
+</Columns>
+
+## Deposit
+
+Anyone can fund any claimed agent. Depositing does not give the depositor any rights over the vault.
+
+<Tabs>
+  <Tab title="Deposit page" icon="globe">
+    Send `/deposit` in Telegram, or open the link shown in the claimed banner:
+
+    ```text
+    https://vault-deposit.kineticvm.xyz?address=0x77102fCAC7927bB64507DF82bf1ae659465B4EE5&agent=2005
+    ```
+
+    Connect any wallet on Monad testnet, enter an amount, and confirm. The page checks the agent is claimed, then calls `deposit(agentId)` with the amount as value.
+  </Tab>
+  <Tab title="cast" icon="terminal">
+    ```bash
+    cast send 0x77102fCAC7927bB64507DF82bf1ae659465B4EE5 \
+      "deposit(uint256)" 2005 \
+      --value 2ether \
+      --rpc-url https://testnet-rpc.monad.xyz \
+      --account funder
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Do not send MON to the vault address with a plain transfer. The vault rejects it, because it would not know which agent to credit. Always call `deposit(agentId)`.
+</Warning>
+
+Get testnet MON from the [Monad faucet](https://faucet.monad.xyz).
+
+## How the device pays gas
+
+The claim page gives the device its first gas: after the claim and the attestor approval, if the device address holds less than 1 MON, the page asks the owner to send it 1 MON.
+
+From then on, the device refills itself. Before every payment and every attestation it runs this check:
+
+<Steps>
+  <Step title="Read the device balance">
+    Above 1 MON, nothing happens.
+  </Step>
+  <Step title="Size a top-up">
+    At or below 1 MON, it computes the largest amount that fits all of these at once: room up to 5 MON, the per-transaction cap, what is left of the daily cap, and the vault balance.
+  </Step>
+  <Step title="Take it from the vault">
+    If that amount lifts the device above 1 MON, it calls `topUpGas(agentId, amount)` and then sends the real transaction.
+  </Step>
+  <Step title="Or stop and tell the owner">
+    If the vault itself cannot cover it, the device posts a funding link to the paired Telegram chat and the transaction does not go out.
+  </Step>
+</Steps>
+
+Gas top-ups are spending. They count toward the per-transaction cap and the daily window, they stop while the vault is paused, and they appear as `GasToppedUp` events.
+
+<AccordionGroup>
+  <Accordion title="“the spending cap is too low to top up device gas”" icon="circle-alert">
+    The vault has enough MON, but the caps are too small for one top-up to lift the device above 1 MON. This happens when the device balance has fallen well below 1 MON, for example to 0.5 MON with a 0.05 MON per-transaction cap. Send the device address a little MON directly, or raise the caps with `/limits`.
+  </Accordion>
+  <Accordion title="“The vault does not have enough MON for device gas”" icon="wallet">
+    The vault balance cannot cover the minimum top-up. Deposit more with the link in the message.
+  </Accordion>
+  <Accordion title="“the device could not take gas from the vault”" icon="circle-pause">
+    The top-up transaction reverted. The most common cause is a paused vault. Resume with `/resume`, or send MON to the device address directly.
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+  With the quickstart defaults, a 0.05 MON per-transaction cap and a 1 MON daily cap, the device tops up in 0.05 MON steps and stays just above 1 MON. Fees on Monad are small, so this covers a large number of attestations.
+</Tip>
+
+## Paying recipients
+
+The device pays with the `vault_pay` tool, giving a recipient and an amount in MON. Before it can pay anyone:
+
+1. The recipient must be allowlisted. Send `/approve <address>` and sign the digest. See [Telegram owner commands](/operate/telegram#the-signing-flow).
+2. The vault must not be paused.
+3. The amount must fit the per-transaction cap and what is left of the daily cap.
+
+`vault_pay` always raises an approval card on chat channels before it runs.
+
+## Withdraw
+
+Only the current owner can withdraw, and funds always go to the owner. A withdrawal ignores the caps and works while the vault is paused, so an owner can always recover funds from a device they no longer trust.
+
+<Tabs>
+  <Tab title="Withdraw page" icon="globe">
+    Send `/withdraw` in Telegram and open the link:
+
+    ```text
+    https://vault-deposit.kineticvm.xyz/withdraw?address=0x77102fCAC7927bB64507DF82bf1ae659465B4EE5&agent=2005
+    ```
+
+    Connect the **owner** wallet, enter an amount, and confirm. The page refuses to continue if the connected wallet is not `ownerOfAgent(agentId)`.
+  </Tab>
+  <Tab title="cast" icon="terminal">
+    ```bash
+    cast send 0x77102fCAC7927bB64507DF82bf1ae659465B4EE5 \
+      "withdraw(uint256,uint256)" 2005 1ether \
+      --rpc-url https://testnet-rpc.monad.xyz \
+      --account owner
+    ```
+  </Tab>
+</Tabs>
+
+MON already sent to the device address for gas is not in the vault. It belongs to the device key, and only the device can move it.

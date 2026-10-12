@@ -1,0 +1,171 @@
+---
+title: "Plugins"
+description: "Write tools as sandboxed WebAssembly components, declare what they may touch, build them, and install them onto a device."
+icon: "puzzle"
+---
+
+A plugin is a WebAssembly component that exports tools to the agent. Plugins run inside the runtime's Wasmtime sandbox, with no filesystem and no network unless the package is granted them. They are how a builder gives a machine its own actions.
+
+## Create a package
+
+```bash
+kinetic plugin create ./vending
+```
+
+The directory name becomes the plugin name. It must start with a lowercase letter or underscore, use only lowercase letters, digits, and underscores, and be at most 64 characters. The command refuses to overwrite an existing path.
+
+The starter package contains two working tools, `ping` and `note`, a one-step SOP, a skill, a record schema, and the WIT interface files. Each file starts with a note saying what to replace.
+
+## The manifest
+
+```toml manifest.toml
+name = "vending"
+version = "0.1.0"
+description = "Vend products from a four-slot machine."
+wasm_path = "plugin.wasm"
+capabilities = ["tool", "skill"]
+permissions = ["state_read", "state_write"]
+
+[egress]
+hosts = ["api.example.com"]
+
+[config_schema]
+type = "object"
+additionalProperties = false
+
+[config_schema.properties.api_token]
+type = "string"
+x-secret = true
+```
+
+<ParamField path="capabilities" type="string[]" required>
+  What the package provides. `tool` for tools, `skill` for a `skills/` directory. The runtime also understands `channel`, `memory`, and `observer`.
+</ParamField>
+
+<ParamField path="permissions" type="string[]">
+  What the tools may use: `state_read`, `state_write`, `config_read`, `http_client`, `websocket_client`, `socket_client`, `memory_read`, `memory_write`, `file_read`, `file_write`. Anything not listed is denied at the host boundary.
+</ParamField>
+
+<ParamField path="egress.hosts" type="string[]">
+  Hosts the plugin intends to reach, exact names or `*.suffix` patterns. A declaration is **not** a grant. The effective allowlist lives in the operator's config (`plugins.entries[].egress_hosts`). On first install it is seeded from this list and printed, and a reinstall never widens an existing grant.
+</ParamField>
+
+<ParamField path="config_schema" type="object">
+  JSON Schema for the plugin's own config section. A top-level string property with `x-secret = true` is withheld from public config and served only through the secrets import. Add `config_read` to `permissions` together with a schema.
+</ParamField>
+
+## Write tools
+
+A multi-tool package implements the `tools-plugin` world. The host calls `list-tools` once at load time and registers each name, then calls `execute` per invocation.
+
+```rust src/lib.rs
+#[cfg(target_family = "wasm")]
+mod component {
+    wit_bindgen::generate!({
+        path: "wit/v0",
+        world: "tools-plugin",
+        features: ["plugins-wit-v0"],
+    });
+
+    use exports::kinetic::plugin::plugin_info::Guest as PluginInfo;
+    use exports::kinetic::plugin::toolbox::{Guest, ToolInfo, ToolResult};
+
+    struct Tools;
+
+    impl PluginInfo for Tools {
+        fn plugin_name() -> String { "vending".to_string() }
+        fn plugin_version() -> String { "0.1.0".to_string() }
+    }
+
+    impl Guest for Tools {
+        fn list_tools() -> Vec<ToolInfo> {
+            vec![ToolInfo {
+                name: "check_code".to_string(),
+                description: "Check a keypad purchase code and return the slot.".to_string(),
+                parameters_schema: r#"{"type":"object","properties":{"code":{"type":"string"}},"required":["code"]}"#.to_string(),
+            }]
+        }
+
+        fn execute(name: String, args: String) -> Result<ToolResult, String> {
+            match name.as_str() {
+                "check_code" => Ok(ToolResult { success: true, output: check(&args)?, error: None }),
+                other => Err(format!("unknown tool {other}")),
+            }
+        }
+    }
+
+    fn check(args: &str) -> Result<String, String> {
+        // Parse args, look the code up, return the slot as JSON.
+        Ok(r#"{"slot":4}"#.to_string())
+    }
+
+    export!(Tools);
+}
+```
+
+| Interface | Purpose |
+| --- | --- |
+| `toolbox` | `list-tools` and `execute(name, args)`. An empty tool list is a load error. |
+| `plugin-info` | Plugin name and version. |
+| `state` | Encrypted durable key-value state with compare-and-swap. See [State](/concepts/state#plugin-state). |
+| `secrets` | Read config properties marked `x-secret`. |
+| `logging` | Structured logs from the guest. |
+| `sockets`, `websocket` | Host-mediated outbound TCP/TLS and WebSocket, linked only with the matching permission. Every connection passes the egress grant. |
+
+A single-tool component can export the older `tool` interface from the `tool-plugin` world instead. Both are supported.
+
+<Warning>
+  Do not return chat ids, wallet addresses, access codes, or other personal data in tool output or store them in state. Tool output goes to the model, and the model can put it in a record.
+</Warning>
+
+## Build
+
+```bash
+rustup target add wasm32-wasip2
+kinetic build ./vending
+```
+
+`kinetic build` runs the system Cargo for the `wasm32-wasip2` target, copies the component to `wasm_path`, and writes its SHA-256 into the manifest:
+
+```text
+Wrote ./vending/plugin.wasm. SHA-256 3f9a…c12e.
+```
+
+The build machine needs Rust. The device does not: you can build on a laptop and copy the package over.
+
+## Install a package
+
+```bash
+kinetic plugin install ./vending
+```
+
+Install is one transaction across several pieces of device state. If any step fails, everything before it is rolled back.
+
+<Steps>
+  <Step title="Verify the component">
+    The component is copied into the plugins directory and loaded against this host's WIT. A component built against a different interface is refused. `--no-verify` skips this check, and a plugin that does not load is then skipped at startup.
+  </Step>
+  <Step title="Seed config and egress">
+    A `[[plugins.entries]]` row is created for the plugin. Declared egress hosts are granted and printed. Plugin config values are set with `kinetic config set plugins.entries.<name>.config.<key>`.
+  </Step>
+  <Step title="Install the procedure">
+    If the package has `sop/SOP.toml` and SOP is enabled, the procedure is copied to `<sops_dir>/<name>/`. An existing procedure with the same name is left in place.
+  </Step>
+  <Step title="Write the record schema">
+    If the package has `records.example.toml`, its fields **replace** `[records]` in the device config. Comments elsewhere in the config are kept.
+  </Step>
+</Steps>
+
+Restart the runtime after installing so the agent loads the new tools.
+
+## Manage plugins
+
+```bash
+kinetic plugin list               # installed and cached-registry plugins
+kinetic plugin info vending       # manifest, config entry key, load status
+kinetic plugin remove vending
+```
+
+<Note>
+  Plugin tools are not attested automatically. Attest completed operations explicitly with `monad_attest`, usually as the last step of a [SOP](/build/sops).
+</Note>

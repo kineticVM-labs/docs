@@ -1,0 +1,84 @@
+---
+title: "Configuration"
+description: "The config.toml fields that point a device at Monad, the marketplace, its records, and its boards."
+icon: "settings"
+---
+
+Config lives at `~/.kinetic/config.toml`. `kinetic config get` prints the values the device is using. `kinetic config set <path>` writes one of them. Secrets are stored encrypted, and `kinetic config set` prompts for them so they do not land in shell history.
+
+Changing a claim input after the device is claimed does not change the chain. The chain wins. See [State](/concepts/state).
+
+## chain
+
+`[chain]` is off until quickstart, or `kinetic config set chain.enabled true`, turns it on.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Read and use the agent, vault, and attestor. |
+| `chain_id` | `10143` | Monad testnet. |
+| `rpc_url` | `https://testnet-rpc.monad.xyz` | JSON-RPC for identity, vault, and attestation. |
+| `registry` | `0xa361931269F7e0b1957175a48669F14735E61EDA` | KineticRegistry. |
+| `vault` | `0x77102fCAC7927bB64507DF82bf1ae659465B4EE5` | DeviceVault. |
+| `attestor` | `0x6e46d149b7d3396b42E874765Cf5a1bb26BD5bA5` | KineticAttestor. |
+| `network` | `testnet` | `mainnet` is refused until these addresses are a mainnet deployment. |
+| `claim_url` | `https://claim.kineticvm.xyz` | Public https page the owner opens. Localhost and `.local` hosts are rejected. |
+| `owner` | empty | Wallet that will own the NFT. Used to build the claim link. |
+| `device_name` | empty | Name stored in the agent URI at claim. |
+| `per_tx_cap` | `0.05` | Starting per-transaction cap, in MON, sent with the claim. |
+| `daily_cap` | `1` | Starting daily cap, in MON, sent with the claim. |
+
+`per_tx_cap` must be less than or equal to `daily_cap` at claim time. After claim, change caps with `/limits`, not by editing these two keys.
+
+## marketplace
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `url` | `https://marketplace.kineticvm.xyz` | Site the device posts listings to. Must be https, or http on localhost. |
+| `key` | empty | Agent API key. Set with `kinetic config set marketplace.key`. The prompt masks it. |
+
+The device calls `{url}/api/agent/listings`. Details are in [Data listing](/marketplace/listing).
+
+## records
+
+An empty list turns recording off. Each field is a table:
+
+```toml
+[[records.fields]]
+name = "product"
+type = "string"
+required = true
+```
+
+`type` is `string`, `number`, `boolean`, `object`, or `array`. `required` defaults to true. Names are letters, digits, and underscores, cannot start with a digit, are at most 64 characters, and must be unique. `kinetic plugin install` replaces this whole list from the package's `records.example.toml`.
+
+Stored lines go to `~/.kinetic/records/operations.jsonl`. The path is derived from the install directory. It is not a config key.
+
+## peripherals
+
+With no `[peripherals]` table, the daemon listens for an ESP32 on `/dev/ttyUSB0` and for a Pico, Nucleo, and Arduino on `/dev/ttyACM0`, at 115200 baud. Setting `boards` replaces that list, including when the list is empty.
+
+```toml
+[peripherals]
+enabled = true
+
+[[peripherals.boards]]
+board = "esp32"
+transport = "serial"
+path = "/dev/ttyUSB0"
+baud = 115200
+```
+
+`transport` is `serial`, `native`, or `websocket`. `native` is local GPIO, used with `rpi-gpio`.
+
+## Plugins and SOPs
+
+Plugins are discovered from `~/.kinetic/plugins` when plugin discovery is on, which is the default. Each installed package gets a `[[plugins.entries]]` row. Egress grants and plugin config live on that row:
+
+```bash
+kinetic config set plugins.entries.vending.config.api_token
+kinetic config set plugins.entries.vending.egress_hosts
+```
+
+SOPs load from `~/.kinetic/sops`. A package install copies `sop/` to `<sops_dir>/<name>/` and leaves an existing directory in place.
+
+`kinetic config schema` prints every other key the runtime accepts, including channels, providers, and memory. Quickstart writes the Telegram bot token and the model provider for you.

@@ -1,0 +1,92 @@
+---
+title: "First plugin"
+description: "Scaffold a plugin package, compile it to wasm32-wasip2, and install the tools onto a device."
+icon: "puzzle"
+---
+
+A plugin is how your own tools show up next to `monad_attest` and `gpio_write`. This tutorial installs the starter package, then points at the two files you replace for a real machine.
+
+You need Rust on the machine where you compile. The device that runs the plugin does not need a compiler. Copy the package over after `kinetic build` if those are different machines.
+
+## Scaffold
+
+```bash
+kinetic plugin create ./vending
+```
+
+The directory name is the plugin name. It must be lowercase letters, digits, and underscores, and it must start with a letter or underscore. The command writes a Cargo package, `manifest.toml`, a SOP, a skill, a record schema, and the WIT files under `wit/v0`.
+
+Open `src/lib.rs`. The starter exports two tools, `ping` and `note`. `ping` returns `pong`. `note` stores text in host state and returns the previous value. Both are real tools. You can install them before you replace them.
+
+## Build
+
+```bash
+rustup target add wasm32-wasip2
+kinetic build ./vending
+```
+
+A successful build prints the path of `plugin.wasm` and its SHA-256, and writes that hash into `manifest.toml`. If Cargo is missing, the command says so and stops. The device binary does not bundle a compiler.
+
+## Install
+
+On the device:
+
+```bash
+kinetic plugin install ./vending
+```
+
+Install copies the component, loads it against this runtime's WIT, and then:
+
+- seeds a `plugins.entries` row, and grants any egress hosts the manifest declares,
+- copies `sop/` into the SOP directory when SOP is enabled, leaving an existing procedure of the same name in place,
+- replaces `[records]` in the device config with `records.example.toml` when that file is present.
+
+If a later step fails, the plugin copied in the first step is removed. Restart the runtime so the agent loads the new tools:
+
+```bash
+kinetic start
+```
+
+In the paired Telegram chat, ask the device to run `ping`. The tool result is `pong`.
+
+## Replace the starter
+
+For the vending machine, replace `ping` and `note` with the tools the procedure calls. A lookup tool is enough to start:
+
+```rust
+ToolInfo {
+    name: "check_code".to_string(),
+    description: "Map a keypad code to a slot. Return JSON with slot, product, and price_mon.".to_string(),
+    parameters_schema: r#"{"type":"object","properties":{"code":{"type":"string"}},"required":["code"]}"#.to_string(),
+}
+```
+
+Return a JSON object whose fields match the [record schema](/concepts/records). Do not return the code in the tool output if that output might be copied into `monad_attest`.
+
+Then replace three more files before you install again:
+
+| File | Replace it with |
+| --- | --- |
+| `sop/SOP.toml` and `sop/SOP.md` | The vend procedure from the [vending tutorial](/tutorials/vending-machine) |
+| `skills/vending/SKILL.md` | When to vend, which fields to attest, and what to refuse |
+| `records.example.toml` | `product`, `slot`, and `price_mon` |
+
+`kinetic plugin install` again replaces the record fields. It does not overwrite a SOP directory that is already installed. If you changed `sop/` after the first install, copy the new files into `~/.kinetic/sops/vending/` yourself, or remove that directory first.
+
+<Note>
+  Rebuild after every change to `src/lib.rs`. The installed component is the wasm file, not the Rust source.
+</Note>
+
+## When a tool needs the network or a secret
+
+Declare the host under `[egress]` in `manifest.toml`, and add `http_client` to `permissions`. The first install grants those hosts and prints the `kinetic config set` command that edits the grant later. A reinstall does not widen a grant that is already there.
+
+A secret is a string property in `[config_schema]` with `x-secret = true`, plus `config_read` in `permissions`. Set the value with:
+
+```bash
+kinetic config set plugins.entries.vending.config.api_token
+```
+
+The prompt masks the input. The guest reads it through the secrets import, not from the public config object.
+
+The full manifest, permissions, and rollback rules are in [Plugins](/build/plugins).

@@ -1,0 +1,53 @@
+---
+title: "Glossary"
+description: "The words KineticVM uses for identity, money, records, and the software around a device."
+icon: "book-marked"
+---
+
+<AccordionGroup>
+  <Accordion title="Agent" icon="bot">
+    An ERC-721 token in the ERC-8004 Identity Registry. In KineticVM, one agent is one machine. The token id is the agent id.
+  </Accordion>
+  <Accordion title="Agent URI" icon="link">
+    The metadata URI stored on the agent at claim. The claim page writes a data URI containing the device name and the device address.
+  </Accordion>
+  <Accordion title="Attestation" icon="badge-check">
+    A device-signed action proof that KineticAttestor has written to the ERC-8004 Validation Registry with response 100.
+  </Accordion>
+  <Accordion title="Claim ticket" icon="ticket">
+    An EIP-712 signature by the device key over `ClaimTicket(device, owner, nonce, deadline)`. It names the only wallet allowed to call `claim` or `link` with it, and it works once.
+  </Accordion>
+  <Accordion title="Device key" icon="key-round">
+    The secp256k1 key that lives on the machine. It signs tickets, proofs, and transactions. It does not own the agent NFT.
+  </Accordion>
+  <Accordion title="DeviceVault" icon="vault">
+    The contract that holds MON per agent and enforces the caps, the allowlist, and pause.
+  </Accordion>
+  <Accordion title="KineticAttestor" icon="badge-check">
+    The validator contract. It checks an action proof and writes the validation. It is not proof that hardware moved.
+  </Accordion>
+  <Accordion title="KineticRegistry" icon="fingerprint">
+    The contract that mints the agent to the owner and binds one device key to it.
+  </Accordion>
+  <Accordion title="Operation record" icon="file-spreadsheet">
+    One canonical JSON line describing one completed operation. The attested `paramsHash` is keccak256 of that line.
+  </Accordion>
+  <Accordion title="Owner" icon="user">
+    The current `ownerOf` the agent NFT. The only address that can withdraw, pause, tighten caps, and authorize a loosening signature.
+  </Accordion>
+  <Accordion title="Plugin" icon="puzzle">
+    A WebAssembly component that exports tools, and optionally a SOP, a skill, and a record schema.
+  </Accordion>
+  <Accordion title="Request hash" icon="hash">
+    The `bytes32` KineticAttestor derives from the action proof and passes to `validationRequest`. Buyers look up `getValidationStatus` with it.
+  </Accordion>
+  <Accordion title="SOP" icon="list-ordered">
+    A standard operating procedure: triggers plus ordered steps that call tools. The engine runs it.
+  </Accordion>
+  <Accordion title="Skill" icon="book-open">
+    A `SKILL.md` file of guidance for the model. It does not execute and it is not attested.
+  </Accordion>
+  <Accordion title="Vault account" icon="wallet">
+    The MON balance and limits for one agent id inside the shared DeviceVault. Depositing for one agent does not credit another.
+  </Accordion>
+</AccordionGroup>

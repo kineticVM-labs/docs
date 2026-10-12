@@ -1,0 +1,94 @@
+---
+title: "Ownership"
+description: "Sell or hand over a machine by transferring its agent NFT, revoke a device you no longer trust, and rotate a device key."
+icon: "key-round"
+---
+
+Ownership of a KineticVM machine is ownership of its ERC-8004 agent NFT. Nothing else, not the Telegram chat, not `chain.owner` in the config, not who holds the hardware, gives anyone control of the vault.
+
+This page covers the four registry operations that change who and what is bound to an agent.
+
+| Operation | Who calls it | Effect on the device | Effect on the vault |
+| --- | --- | --- | --- |
+| Transfer the NFT | Current owner | Old device stops working at once | Nothing until release |
+| `releaseTransferred` | Anyone | Old device unbound | Paused |
+| `link` | Current owner | New device bound | Rebind: new caps, paused, allowlist cleared |
+| `revoke` | Current owner | Device unbound | Paused |
+| `rotate` | Current owner | Key replaced in place | Unchanged |
+
+## Transfer a machine
+
+<Steps>
+  <Step title="Transfer the NFT">
+    The seller transfers the agent NFT on the ERC-8004 Identity Registry with a normal ERC-721 `transferFrom` or `safeTransferFrom`.
+
+    The instant this lands, `activeDevice(agentId)` starts reverting with `OwnerChanged`, because the owner no longer matches `boundOwner`. The old device can no longer pay from the vault or attest. No cleanup transaction is needed for this to be safe.
+  </Step>
+  <Step title="Release the old binding">
+    Anyone, usually the buyer, calls `releaseTransferred(agentId)` on `KineticRegistry`. It clears the old device binding, pauses the vault, and emits `Released`. It reverts with `OwnerUnchanged` if the NFT has not actually moved.
+  </Step>
+  <Step title="Link a device">
+    The new owner has the device sign a claim ticket naming the new owner, then calls `link(agentId, device, signature, deadline, (perTxCap, dailyCap))`. This is a **rebind**: the vault gets the new caps, starts paused, and has an empty allowlist. The balance stays with the agent.
+  </Step>
+  <Step title="Resume">
+    The new owner calls `unpause` from their wallet, or uses `/resume` once they have paired Telegram, and approves recipients again.
+  </Step>
+</Steps>
+
+<Note>
+  The vault balance travels with the agent. A seller who does not want to hand over the MON in the vault should withdraw it **before** transferring the NFT.
+</Note>
+
+<Note>
+  The claim page performs `claim`, which always mints a new agent. Linking a device to an existing agent is a direct contract call from the owner wallet today.
+</Note>
+
+## Revoke a device
+
+Revoke when a device is lost, stolen, or misbehaving and you want it disconnected immediately.
+
+```bash
+cast send 0xa361931269F7e0b1957175a48669F14735E61EDA \
+  "revoke(uint256)" 2005 \
+  --rpc-url https://testnet-rpc.monad.xyz \
+  --account owner
+```
+
+`revoke` clears the binding, deletes `boundOwner`, pauses the vault, and emits `Revoked(agentId, device)`. The NFT and the vault balance stay with you. You can then:
+
+- **withdraw** the balance, since withdrawals work while paused, or
+- **link** a replacement device to the same agent, keeping its identity, attestation history, and reputation.
+
+After a revoke, the old device reads itself as unbound. If it is still running, it reports itself unclaimed.
+
+<Tip>
+  If you only want to stop spending for a while, `pause(agentId)` on the vault is lighter. The device stays bound and keeps its identity, and `/resume` brings it back.
+</Tip>
+
+## Rotate the device key
+
+Rotate replaces the device key while the agent stays bound, for example when moving a key into a secure element or after reinstalling a device.
+
+```solidity
+rotate(uint256 agentId, address newDevice, bytes signature, uint256 deadline)
+```
+
+The **new** key signs a claim ticket naming the owner. The registry checks it, unbinds the previous key, binds the new one, records the caller as `boundOwner`, and emits `Rotated(agentId, previousDevice, device)`.
+
+<Warning>
+  `rotate` does not touch the vault. Caps, pause state, and the allowlist carry over. A new owner who rotates instead of releasing and linking inherits the previous owner's allowlist. To start from a clean vault after a transfer, use `releaseTransferred` and `link`.
+</Warning>
+
+## Errors you may see
+
+| Error | Cause |
+| --- | --- |
+| `NotOwner` | The caller does not own the agent NFT. |
+| `NotBound` | No device is bound to this agent. |
+| `AlreadyBound` | The agent already has a device, or the device is bound to another agent. Release or revoke first. |
+| `DeviceIsOwner` | The device address is zero or equal to the owner. |
+| `BadSignature` | The ticket was not signed by the device, or names a different owner. |
+| `Expired`, `DeadlineTooFar` | The ticket deadline has passed, or is more than one day out. |
+| `OwnerUnchanged` | `releaseTransferred` was called but the NFT never moved. |
+
+The full contract surface is in the [KineticRegistry reference](/contracts/kinetic-registry).

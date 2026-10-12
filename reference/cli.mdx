@@ -1,0 +1,68 @@
+---
+title: "CLI"
+description: "The kinetic commands that set up a device, run it, and build on it."
+icon: "square-terminal"
+---
+
+The binary is `kinetic`. `kinetic --help` prints every command. This page is the set that matters for a KineticVM device. Global flags `--config-dir`, `--log-level`, and `--verbose` apply to all of them. Logs stay off the terminal unless you pass `--verbose`.
+
+Install paths and the first-run prompts are in the [quickstart](/quickstart).
+
+## Set up and run
+
+| Command | What it does |
+| --- | --- |
+| `kinetic quickstart` | Asks for the device name, owner wallet, Telegram bot token, model, API key, and the two caps. Writes config. Does not create the device key. Needs a terminal. |
+| `kinetic start` | Runs the device: gateway, Telegram, heartbeat, and scheduler. `kinetic daemon` is the same process. |
+| `kinetic start -p 9090` | Gateway on port 9090. `--host` binds the address. |
+| `kinetic claim-link` | Prints the claim page URL. Needs `chain.enabled` and `chain.owner`. |
+| `kinetic service install` | Registers `kinetic start` with systemd or launchd so the device boots with the machine. |
+| `kinetic doctor` | Diagnostics for the daemon, scheduler, and channels. |
+| `kinetic status` | System status. |
+| `kinetic update` | Replaces this binary with the latest published release. `--force` reinstalls even when the version matches. |
+
+`kinetic onboard` is deprecated. Use `kinetic quickstart`.
+
+## Config
+
+| Command | What it does |
+| --- | --- |
+| `kinetic config get` | Prints the device card. `kinetic config get chain.owner` prints one value. |
+| `kinetic config set chain.owner 0x…` | Sets a property. Secret fields, including `marketplace.key`, prompt instead of taking the value on the command line. |
+| `kinetic config list` | Lists properties and current values. |
+| `kinetic config schema` | Prints the config JSON Schema. |
+| `kinetic config migrate` | Migrates `config.toml` to the current schema and keeps comments. |
+
+The fields that name the chain are in [Configuration](/reference/configuration).
+
+## Build
+
+| Command | What it does |
+| --- | --- |
+| `kinetic plugin create ./name` | Writes a starter package. The directory name is the plugin name. |
+| `kinetic build ./name` | Compiles the package with the system Cargo for `wasm32-wasip2`. |
+| `kinetic plugin install ./name` | Installs the component, SOP, skill, and record schema. See [Plugins](/build/plugins#install-a-package). |
+| `kinetic plugin list` | Installed plugins and the cached registry. |
+| `kinetic plugin info name` | Manifest, config key, and whether the component loads. |
+| `kinetic plugin remove name` | Removes an installed plugin. |
+| `kinetic skills list --agent device` | Skills the `device` agent actually loads. |
+| `kinetic skills add`, `edit`, `audit`, `install`, `remove`, `test` | Authoring. See [Skills](/build/skills). |
+| `kinetic sop list` | Loaded procedures. |
+| `kinetic sop validate`, `show`, `graph` | Check and inspect a definition. |
+| `kinetic sop pending`, `approve`, `deny`, `logs` | Runs waiting on the daemon. |
+
+## Hardware
+
+| Command | What it does |
+| --- | --- |
+| `kinetic hardware discover` | USB devices matched against known boards. |
+| `kinetic hardware introspect /dev/ttyUSB0` | Opens a serial path and asks the board what it can do. |
+| `kinetic hardware info` | Chip info through an ST-Link, with no firmware on the target. |
+| `kinetic peripheral list` | Configured boards. |
+| `kinetic peripheral add esp32 /dev/ttyUSB0` | Registers a board. `rpi-gpio native` is local GPIO. |
+
+## Talk to the model directly
+
+`kinetic agent -a device` opens a terminal session as the `device` agent. `-m` sends one message and exits. The usual way to operate a claimed device is the paired Telegram chat, including the [owner commands](/operate/telegram).
+
+`kinetic estop` freezes tools or network on the device. It does not pause the vault. Pausing spend is `pause` on [DeviceVault](/contracts/device-vault), which `/pause` tells you how to call.

@@ -1,0 +1,56 @@
+---
+title: "Trust and safety"
+description: "What KineticVM guarantees, what it deliberately does not, and the controls an owner has when something goes wrong."
+icon: "shield"
+---
+
+KineticVM separates the person who owns a machine from the key that machine signs with, and it puts every payment through a contract the device cannot rewrite. This page is the boundary of that design. The contracts are on Monad testnet and have not been audited. Amounts in a vault are testnet MON.
+
+## What the protocol holds
+
+<AccordionGroup>
+  <Accordion title="The owner is the NFT" icon="fingerprint">
+    `ownerOf` on the ERC-8004 Identity Registry is the owner. Telegram pairing, `chain.owner` in the config, and physical access to the board do not transfer the vault. Selling the machine is transferring the NFT, which makes `activeDevice` revert until the new owner links a device.
+  </Accordion>
+  <Accordion title="The device key is not an operator" icon="key-round">
+    The device key signs claim tickets, action proofs, and its own transactions. No KineticVM contract approves that key on the agent NFT. It cannot transfer the identity, and it cannot open a validation by itself. The owner approves the attestor.
+  </Accordion>
+  <Accordion title="Spending has one door" icon="vault">
+    `pay` is the only vault function that sends MON to a third party. It requires the active device, an unpaused vault, an allowlisted recipient, and room under both caps. There is no second path for the device to move the balance.
+  </Accordion>
+  <Accordion title="Loosening needs the owner" icon="pen-line">
+    Lowering caps, pausing, removing a recipient, and withdrawing are direct owner transactions. Raising caps, adding a recipient, and unpausing need the owner in person or an EIP-712 signature that the vault checks. A personal signature is rejected. The device can relay the signed call. It cannot sign it.
+  </Accordion>
+  <Accordion title="Records are the bytes that were signed" icon="file-check">
+    An operation line is canonicalized before it is signed, and the same line is what gets stored. A buyer hashes the line and compares it to the Validation Registry. The host does not add chat ids, wallets, or codes.
+  </Accordion>
+</AccordionGroup>
+
+## What it does not hold
+
+An attestation with response `100` proves a signature by the bound device key. It does not prove the actuator moved, the sensor was calibrated, or the plugin told the truth. A marketplace listing does not add that proof. Verification replays the signature check. It does not replay the physical event.
+
+The device key, in the default software signer, is an encrypted file on the device. Someone who can read that file and the secret store can sign as the device until the owner revokes or rotates the key. A secure element such as the SE050 is the planned place for that key. The signer interface is the same either way. The element is not what this testnet build uses.
+
+Plugins run in a WebAssembly sandbox, with permissions and an egress list the operator grants. A permission you grant is a permission the plugin has. Review a package before you install it, and keep `http_client` and filesystem permissions off unless a tool needs them.
+
+## Controls when something is wrong
+
+| You want | Do this |
+| --- | --- |
+| Stop payments now, from a wallet the device cannot block | Call `pause(agentId)` on DeviceVault. `/pause` prints the call. |
+| Stop the device from acting, and pause the vault | `revoke(agentId)` on KineticRegistry. |
+| Get the MON out | `withdraw` works while paused and ignores the caps. `/withdraw` opens the page. The owner wallet has to send it. |
+| Replace a key and keep the agent | `rotate`, or `link` after a revoke. Read [Ownership](/operate/ownership) for which one leaves the allowlist in place. |
+| Freeze tools or network on the machine | `kinetic estop`. This is local. It does not pause the vault. Resume the vault separately if you also paused it. |
+| Stop a chat from driving the device | Pairing is one Telegram account. Remove that peer from the channel config if the account is no longer yours. The vault is unaffected either way. |
+
+<Warning>
+  Pausing the vault does not delete the device key, and estop does not pause the vault. Use the control that matches the thing you are stopping.
+</Warning>
+
+## Data you should not put in a record
+
+Anything in an operation record can be listed and sold. Declare only the fields a buyer of that dataset should see. Do not declare names, chat ids, wallet addresses, access codes, or precise locations unless publishing them is the point.
+
+The marketplace key is an encrypted config secret. The device sends it as a bearer token. Treat a leaked `kvm_` key the way you would treat a leaked API key: it can publish listings for that agent until the NFT moves, which revokes stale keys, or you stop using it. The key cannot spend the vault and cannot sign attestations.

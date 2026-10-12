@@ -1,0 +1,132 @@
+---
+title: "Device Vault"
+description: "How a machine holds and spends money: per-agent balances, per-transaction and rolling daily caps, a recipient allowlist, a pause switch, and owner-signed loosening."
+icon: "vault"
+---
+
+A machine that pays for things needs money it can reach without asking, and limits it cannot escape. `DeviceVault` gives each agent a balance in MON and a set of rules that the device key has to pass through on every payment.
+
+<Info>
+  The vault is a single shared contract. Each agent has its own **account** inside it, keyed by agent id. Depositing for agent `2005` never touches agent `2006`.
+</Info>
+
+## The limits
+
+Every agent account has four controls.
+
+<CardGroup cols={2}>
+  <Card title="Per-transaction cap" icon="arrow-up-from-line">
+    The most a single payment may move. A payment above it reverts with `PerTxCap`.
+  </Card>
+  <Card title="Daily cap" icon="calendar-clock">
+    The most that may leave in one rolling 24-hour window. Going over reverts with `DailyCap`.
+  </Card>
+  <Card title="Recipient allowlist" icon="list-checks">
+    The only addresses the device may pay. Any other recipient reverts with `NotAllowlisted`.
+  </Card>
+  <Card title="Pause" icon="circle-pause">
+    While paused, nothing leaves except an owner withdrawal. Spending reverts with `Paused`.
+  </Card>
+</CardGroup>
+
+The starting caps come from quickstart and travel inside the claim link. The allowlist starts empty, so a freshly claimed device cannot pay anyone until the owner approves a recipient.
+
+## How a payment is checked
+
+The device pays with `pay(agentId, recipient, amount)`. It is the only function in the vault that sends value to a third party. Every call runs the same checks, in this order:
+
+<Steps>
+  <Step title="Caller is the active device">
+    `msg.sender` must equal `KineticRegistry.activeDevice(agentId)`. That call itself reverts if no device is bound or if the NFT owner changed since binding.
+  </Step>
+  <Step title="Spending is not paused">
+    Otherwise `Paused`.
+  </Step>
+  <Step title="Amount is positive and the recipient is allowlisted">
+    Otherwise `ZeroAmount` or `NotAllowlisted`.
+  </Step>
+  <Step title="Amount fits the per-transaction cap">
+    Otherwise `PerTxCap`.
+  </Step>
+  <Step title="Amount fits the daily window">
+    If the current window started more than 24 hours ago, a new window starts now with nothing spent. Then `spent + amount` must not exceed the daily cap, otherwise `DailyCap`.
+  </Step>
+  <Step title="Balance covers it">
+    Otherwise `InsufficientBalance`. The balance is debited, the window is charged, and MON is sent.
+  </Step>
+</Steps>
+
+<Note>
+  The daily window is **rolling from the first spend**, not a calendar day. `spentToday(agentId)` returns zero once 24 hours have passed since the window started.
+</Note>
+
+## Tightening is instant, loosening needs a signature
+
+The asymmetry is deliberate. Making a device safer should be one click. Giving it more power should require proof that the owner, and not a compromised device, asked for it.
+
+| Change | Who can do it | How |
+| --- | --- | --- |
+| Lower one or both caps | Owner wallet only | `tightenCaps(agentId, perTxCap, dailyCap)` directly. |
+| Pause | Owner wallet only | `pause(agentId)` directly. |
+| Remove a recipient | Owner wallet only | `disallowRecipient(agentId, recipient)` directly. |
+| Raise one or both caps | Owner, or anyone holding the owner's signature | `loosenCaps(agentId, perTxCap, dailyCap, deadline, signature)` |
+| Add a recipient | Owner, or anyone holding the owner's signature | `allowRecipient(agentId, recipient, deadline, signature)` |
+| Unpause | Owner, or anyone holding the owner's signature | `unpause(agentId, deadline, signature)` |
+
+When the owner calls a loosening function directly, the transaction itself is the authorization and the signature is ignored. When anyone else calls it, they must present an **EIP-712 signature** from the current owner over one of these structs:
+
+```solidity
+LoosenCaps(uint256 agentId, uint256 perTxCap, uint256 dailyCap, uint256 nonce, uint256 deadline)
+AllowRecipient(uint256 agentId, address recipient, uint256 nonce, uint256 deadline)
+Unpause(uint256 agentId, uint256 nonce, uint256 deadline)
+```
+
+The domain is `name = "DeviceVault"`, `version = "1"`. All three share one counter, `loosenNonce[agentId]`, which increments on each relayed signature, so every signature works once. A personal (`eth_sign`) signature is rejected.
+
+This is how [Telegram owner commands](/operate/telegram) work: the device computes the digest with `hashLoosenCaps`, `hashAllowRecipient`, or `hashUnpause`, the owner signs it in their wallet, and the device relays the transaction and pays its gas. The device never gains the ability to sign for the owner.
+
+<Warning>
+  A cap change must move in one direction. `tightenCaps` rejects any increase and `loosenCaps` rejects any decrease, and both reject a change that leaves the caps exactly as they are. To raise one cap and lower the other, make two changes.
+</Warning>
+
+## Device gas
+
+The device pays for its own transactions in MON, from its own address. Rather than asking the owner to refill it, the device can take gas from its vault with `topUpGas(agentId, amount)`:
+
+- The transfer goes only to the active device, never anywhere else.
+- It counts against the per-transaction and daily caps like any payment, and it respects the pause.
+- It skips the allowlist, because the recipient is fixed.
+- When the **device** calls it, the device may never end up holding more than `MAX_DEVICE_GAS`, which is 5 MON.
+
+The runtime refills automatically. Before each payment or attestation it checks its balance. At or below 1 MON, it computes a top-up that brings it above 1 MON without exceeding the caps, the vault balance, or 5 MON, and sends it first. If the vault cannot cover that, the owner gets a Telegram message with a funding link. See [Funding and gas](/operate/funding).
+
+## Withdrawals
+
+`withdraw(agentId, amount)` returns MON to the owner. It ignores the caps and works while paused, so an owner can always recover funds from a device they no longer trust. Only the current owner can call it, and the funds go only to that owner.
+
+## Rebinding resets the account
+
+When a new device is bound to an agent that already has a vault account, after a revoke or a transfer release, `bindLimits` treats it as a **rebind**:
+
+- the caps are replaced with the new values,
+- the account starts **paused**,
+- the allowlist is cleared,
+- the daily window is cleared.
+
+The balance stays. A new owner, or a new device, starts from a known safe state and has to unpause deliberately.
+
+## Reading the vault
+
+| View | Returns |
+| --- | --- |
+| `limitsOf(agentId)` | `(perTxCap, dailyCap, paused)` |
+| `balanceOf(agentId)` | The agent's MON balance in the vault. |
+| `spentToday(agentId)` | MON spent in the current window, or zero. |
+| `isAllowed(agentId, recipient)` | Whether a recipient is allowlisted. |
+| `loosenNonce(agentId)` | The nonce the next owner signature must use. |
+
+The [`vault_status`](/reference/agent-tools#vault_status) tool and the `/status` command both read these live. Full signatures and events are in the [DeviceVault reference](/contracts/device-vault).
+
+<Tip>
+  A plain MON transfer to the vault address reverts. Always deposit with `deposit(agentId)`, which the vault page does for you.
+</Tip>

@@ -1,0 +1,123 @@
+---
+title: "Identity"
+description: "How a machine becomes an ERC-8004 agent owned by a person, and how its device key is bound to that identity without ever controlling it."
+icon: "fingerprint"
+---
+
+Every KineticVM device is an **agent** in the ERC-8004 Identity Registry on Monad. The agent is an ERC-721 NFT. Whoever holds the NFT owns the machine. The device itself holds a separate **device key** that the registry binds to the agent.
+
+Two keys, two roles:
+
+<Columns cols={2}>
+  <Card title="Owner wallet" icon="user">
+    Holds the agent NFT. Sets and relaxes limits, withdraws funds, rotates or revokes the device key, and can sell the machine by transferring the NFT.
+  </Card>
+  <Card title="Device key" icon="cpu">
+    Lives on the machine. Signs claim tickets and action proofs, pays within the vault caps, and relays owner-signed changes. Never owns the NFT and is never an operator on it.
+  </Card>
+</Columns>
+
+## The agent identity
+
+The agent id is the token id that the ERC-8004 Identity Registry assigns at mint. The identity also carries an `agentURI`. The KineticVM claim page sets it to a small JSON document:
+
+```json
+{"name": "Lobby vending machine", "device": "0x5c7e…91a2"}
+```
+
+encoded as a `data:application/json,…` URI. The agent's owner is always the live `ownerOf(agentId)` on the Identity Registry. `KineticRegistry` exposes the same value through `ownerOfAgent(agentId)` and never stores its own copy as the source of authority.
+
+## Claim tickets
+
+Before the owner can claim a device, the device has to prove two things: that it holds its key, and which owner it agrees to serve. It does that by signing an EIP-712 **claim ticket**.
+
+```solidity
+ClaimTicket(address device, address owner, uint256 nonce, uint256 deadline)
+```
+
+| Field | Meaning |
+| --- | --- |
+| `device` | The device key's address. |
+| `owner` | The wallet that will call `claim`. A ticket for one owner cannot be used by anyone else. |
+| `nonce` | `claimNonce[device]` on the registry. Each successful claim, link, or rotate increments it, so a ticket works once. |
+| `deadline` | Unix time after which the ticket is rejected. The contract refuses any deadline more than **one day** in the future. The runtime uses 23 hours. |
+
+The EIP-712 domain is `name = "KineticRegistry"`, `version = "1"`, the chain id, and the registry address. The device does not hash the ticket itself: it asks the registry for `hashClaim(device, owner, nonce, deadline)` and signs that digest, so the device and the contract can never disagree on the encoding.
+
+## Claiming
+
+`claim` is one owner transaction that does four things atomically:
+
+<Steps>
+  <Step title="Mint">
+    The registry calls `register(agentURI)` on the Identity Registry. ERC-8004 always mints to the caller, so the NFT lands on the registry for a moment.
+  </Step>
+  <Step title="Transfer">
+    The registry immediately transfers the NFT to `msg.sender`, the owner. The registry only accepts the NFT from the Identity Registry during this call.
+  </Step>
+  <Step title="Bind">
+    The registry verifies the claim ticket, records the device as bound to the agent, and snapshots the current owner as `boundOwner[agentId]`.
+  </Step>
+  <Step title="Initialize the vault">
+    The registry calls `DeviceVault.bindLimits(agentId, perTxCap, dailyCap)` with the caps from the claim link. A first binding starts unpaused.
+  </Step>
+</Steps>
+
+The claim reverts if the device is the owner (`DeviceIsOwner`), if the device or agent is already bound (`AlreadyBound`), if the ticket is expired, too far out, or signed by the wrong key, or if the registry has no vault wired yet (`VaultUnset`).
+
+<Info>
+  After `claim`, the owner also calls `setApprovalForAll(KineticAttestor, true)` on the Identity Registry. The registry cannot do this for the owner, because it only holds the NFT for an instant inside `claim`. Without that approval, attestations revert with `NotOperator`. See [Attestations](/concepts/attestations).
+</Info>
+
+## The binding rules
+
+The registry enforces a strict one-to-one relationship.
+
+- One agent has at most one active device.
+- One device key is bound to at most one agent.
+- The device key is never the owner. `claim`, `link`, and `rotate` all reject a device equal to the caller.
+- The registry never approves the device key as an operator on the NFT, and the device key never holds ERC-721 rights over its own identity.
+
+## Active device and owner changes
+
+`activeDevice(agentId)` is the function every other contract calls before letting a device spend or attest. It returns the bound device, and it **reverts** in two cases:
+
+| Revert | When |
+| --- | --- |
+| `NotBound` | No device is bound to this agent. |
+| `OwnerChanged` | `ownerOf(agentId)` is no longer the owner recorded when the device was bound. |
+
+That second check is what makes a machine safely transferable. The moment the NFT moves, the old device can no longer pay or attest, even before anyone cleans up. Anyone can then call `releaseTransferred(agentId)` to clear the old binding and pause the vault, and the new owner can [link](/operate/ownership#transfer-a-machine) a device to themselves.
+
+## Reading identity from the device
+
+The device never trusts a local copy. On every operation that needs identity, the runtime reads the chain:
+
+1. `deviceToAgent(deviceAddress)` returns `(agentId, bound)`. Agent ids can be zero, so `bound` is the real flag.
+2. If bound, it reads `ownerOfAgent(agentId)` and the vault limits.
+
+The [`monad_identity`](/reference/agent-tools#monad_identity) tool returns exactly this report, either unclaimed with the device address, or claimed with the agent, owner, device, caps, and pause state.
+
+```text
+Agent 2005. Owner 0x6477…7f77. Device 0x5c7e…91a2. Per-transaction cap 0.05 MON.
+Daily cap 1 MON. Paused: no.
+```
+
+## Lifecycle operations
+
+<CardGroup cols={2}>
+  <Card title="Link" icon="link">
+    Bind a new device to an agent the caller already owns. Used after a revoke, or after a transfer release.
+  </Card>
+  <Card title="Rotate" icon="refresh-cw">
+    Replace the device key in place. The new key signs a claim ticket naming the owner.
+  </Card>
+  <Card title="Revoke" icon="circle-x">
+    Drop the device key and pause the vault. The NFT stays with the owner.
+  </Card>
+  <Card title="Release" icon="unlink">
+    Clear a device after the NFT moved. Anyone can call it.
+  </Card>
+</CardGroup>
+
+The operator guide for each of these is [Ownership](/operate/ownership). The function signatures and events are in the [KineticRegistry reference](/contracts/kinetic-registry).

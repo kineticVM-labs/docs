@@ -1,0 +1,44 @@
+---
+title: "FAQ"
+description: "Short answers to the questions that come up while claiming, funding, and selling a device's records."
+icon: "circle-help"
+---
+
+<AccordionGroup>
+  <Accordion title="Does the device own itself?" icon="fingerprint">
+    No. The agent NFT is owned by the wallet that claimed it. The device holds a separate key that can spend inside the vault limits and sign attestations. It is never an operator on the NFT.
+  </Accordion>
+  <Accordion title="I changed chain.owner in the config. Did the owner change?" icon="user">
+    No. `chain.owner` is only used to build the claim link. After claim, the owner is `ownerOf` on the Identity Registry. Transfer the NFT to move it.
+  </Accordion>
+  <Accordion title="I edited per_tx_cap in the config and the vault did not change." icon="sliders-horizontal">
+    Those config values are the caps sent at claim. Later changes go through `/limits` or a direct `tightenCaps` / `loosenCaps` call. The vault is the source of truth.
+  </Accordion>
+  <Accordion title="Why does attest revert with NotOperator?" icon="badge-check">
+    The owner has not approved KineticAttestor on the agent NFT. The claim page sends `setApprovalForAll` after `claim`. If that transaction was rejected, send it from the owner wallet. The attestor address is on [Deployments](/contracts/deployments).
+  </Accordion>
+  <Accordion title="The device says the spending cap is too low to top up gas." icon="fuel">
+    The vault has MON, but one top-up cannot lift the device address above 1 MON without breaking a cap. Send a little MON to the device address, or raise the caps. The thresholds are in [Funding and gas](/operate/funding).
+  </Accordion>
+  <Accordion title="Can I send MON straight to the vault address?" icon="vault">
+    No. The vault reverts a plain transfer, because the transfer does not say which agent to credit. Use `deposit(agentId)` or the `/deposit` link.
+  </Accordion>
+  <Accordion title="Someone messaged my bot. Can they spend?" icon="send">
+    Owner commands and the paired chat are limited to the Telegram account that sent `/bind` with the one-time code. Spending still needs the vault rules, and loosening a limit needs the owner wallet. Another chat gets the unpaired reply.
+  </Accordion>
+  <Accordion title="Does an attestation mean the machine really did it?" icon="cpu">
+    It means the device key signed that record at that time, and the owner had approved the attestor. It does not mean the hardware moved. The full boundary is [What an attestation proves](/concepts/attestations#what-an-attestation-proves).
+  </Accordion>
+  <Accordion title="Where do operation records go?" icon="file-spreadsheet">
+    After a successful `monad_attest`, one canonical line is appended to `~/.kinetic/records/operations.jsonl`, and the request hash to `operation-requests.txt` on the same line number. Nothing is stored when `[records]` has no fields.
+  </Accordion>
+  <Accordion title="Can I list records from a chain other than testnet?" icon="store">
+    `sell_data` and the marketplace only accept chain id 10143 in this version. Mainnet has no KineticVM contracts yet, and the runtime refuses a mainnet config pointed at the testnet addresses.
+  </Accordion>
+  <Accordion title="What happens to the vault if I sell the NFT?" icon="arrow-right-left">
+    The balance stays with the agent. The old device stops working immediately, because `activeDevice` reverts. Withdraw before you transfer if you want to keep the MON. The new owner releases the old binding and links their own device. See [Ownership](/operate/ownership).
+  </Accordion>
+  <Accordion title="Is this audited?" icon="shield">
+    No. The testnet deployment is unaudited. Read [Trust and safety](/security) before you put anything you care about in a vault, and treat the MON as testnet MON.
+  </Accordion>
+</AccordionGroup>

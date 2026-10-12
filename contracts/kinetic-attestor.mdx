@@ -1,0 +1,84 @@
+---
+title: "KineticAttestor"
+description: "The ERC-8004 validator that checks a device-signed action proof and writes response 100 to the Validation Registry."
+icon: "badge-check"
+---
+
+`KineticAttestor` is a validator. It does not decide whether a motor moved. It decides whether the device key bound to an agent signed a specific record, recently, with a fresh nonce, and whether the agent's owner has approved this contract to open a validation.
+
+Address: [`0x6e46d149b7d3396b42E874765Cf5a1bb26BD5bA5`](https://testnet.monadvision.com/address/0x6e46d149b7d3396b42E874765Cf5a1bb26BD5bA5). The proof format and the trust boundary are in [Attestations](/concepts/attestations).
+
+EIP-712 domain: `KineticAttestor` version `1`.
+
+```solidity
+ActionProof(uint256 agentId, bytes32 action, bytes32 paramsHash, string requestURI, uint256 timestamp, uint256 nonce)
+```
+
+| Constant | Value |
+| --- | --- |
+| `MAX_PROOF_AGE` | 10 minutes |
+| `MAX_FUTURE_SKEW` | 2 minutes |
+| `VERIFIED_RESPONSE` | 100 |
+| `ACTION_TAG` | `kinetic-action` |
+
+## attest
+
+```solidity
+function attest(ActionProof calldata proof, bytes calldata signature) external
+```
+
+Anyone may relay a proof. The device relays its own. The function:
+
+<Steps>
+  <Step title="Resolve the device">
+    `registry.activeDevice(agentId)`. This reverts if the device was revoked or the NFT owner changed.
+  </Step>
+  <Step title="Check freshness">
+    `NonceUsed` if this nonce was already accepted. `StaleProof` if `timestamp` is more than 10 minutes old. `FutureProof` if it is more than 2 minutes ahead of the block.
+  </Step>
+  <Step title="Check the signature">
+    The digest from `hashActionProof` must recover to the active device. Otherwise `BadSignature`.
+  </Step>
+  <Step title="Check operator approval">
+    The owner must have `setApprovalForAll` this contract, or approved it for this token. Otherwise `NotOperator`. ERC-8004 only lets an owner or operator open `validationRequest`.
+  </Step>
+  <Step title="Write the validation">
+    Computes `requestHash` and calls `validationRequest` then `validationResponse` on the Validation Registry. Response is `100`, the response hash is `paramsHash`, the tag is `kinetic-action`, and the response URI is empty.
+  </Step>
+</Steps>
+
+```solidity
+requestHash = keccak256(abi.encode(
+    agentId,
+    action,
+    paramsHash,
+    keccak256(bytes(requestURI)),
+    timestamp,
+    nonce
+))
+```
+
+Emits `Attested(agentId, device, requestHash, action)`.
+
+<Warning>
+  This contract never calls `giveFeedback`, and it never approves the device key on the agent NFT. The signature shows the device authorized this record. It does not prove the actuator physically moved.
+</Warning>
+
+## Views
+
+| View | Returns |
+| --- | --- |
+| `hashActionProof(proof)` | The EIP-712 digest the device signs |
+| `nonceUsed(agentId, nonce)` | Whether this nonce has been consumed |
+| `registry`, `identity`, `validation` | The KineticRegistry, Identity Registry, and Validation Registry |
+
+## Errors
+
+| Error | Cause |
+| --- | --- |
+| `BadSignature` | The signer is not the active device. |
+| `StaleProof` | The timestamp is older than 10 minutes. |
+| `FutureProof` | The timestamp is more than 2 minutes ahead. |
+| `NonceUsed` | This nonce was already attested for this agent. |
+| `NotOperator` | The owner has not approved the attestor on the agent NFT. |
+| `ZeroAddress` | The constructor was given a zero registry or validation address. |

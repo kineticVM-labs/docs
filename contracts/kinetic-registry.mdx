@@ -1,0 +1,121 @@
+---
+title: "KineticRegistry"
+description: "The contract that mints an ERC-8004 agent to its owner and binds exactly one device key to it."
+icon: "fingerprint"
+---
+
+`KineticRegistry` is the binding between a person and a machine. It mints the agent NFT, transfers it to the caller, and records which device key may act for that agent. It reads the NFT owner from the Identity Registry on every check. It does not cache ownership.
+
+Address: [`0xa361931269F7e0b1957175a48669F14735E61EDA`](https://testnet.monadvision.com/address/0xa361931269F7e0b1957175a48669F14735E61EDA). The behavior is explained in [Identity](/concepts/identity). The operator flows are in [Ownership](/operate/ownership).
+
+EIP-712 domain: `KineticRegistry` version `1`.
+
+```solidity
+ClaimTicket(address device, address owner, uint256 nonce, uint256 deadline)
+```
+
+`MAX_CLAIM_DEADLINE` is one day. A ticket whose deadline is further out reverts with `DeadlineTooFar`.
+
+## State
+
+| Name | Meaning |
+| --- | --- |
+| `identity` | ERC-8004 Identity Registry. Immutable. |
+| `deployer` | The address allowed to call `setVault` once. Immutable. |
+| `vault` | DeviceVault. Zero until `setVault`. |
+| `claimNonce(device)` | Next nonce for this device's claim ticket. Increments on claim, link, and rotate. |
+| `agentDevice(agentId)` | Bound device, or zero when unbound. |
+| `boundOwner(agentId)` | Owner at the time of the current binding. Compared with `ownerOf`. |
+
+## Functions
+
+<ResponseField name="claim" type="owner">
+  `claim(device, signature, deadline, agentURI, limits) returns (uint256 agentId)`
+
+  Mints via `identity.register`, transfers the NFT to `msg.sender`, checks the claim ticket, and calls `vault.bindLimits`. Emits `Claimed`.
+</ResponseField>
+
+<ResponseField name="link" type="owner">
+  `link(agentId, device, signature, deadline, limits)`
+
+  Binds a device to an agent the caller already owns. Used after revoke or release. Emits `Linked`.
+</ResponseField>
+
+<ResponseField name="rotate" type="owner">
+  `rotate(agentId, newDevice, signature, deadline)`
+
+  Replaces the device key. The new key signs the claim ticket. Does not call the vault, so caps, pause, and the allowlist stay as they are. Emits `Rotated`.
+</ResponseField>
+
+<ResponseField name="revoke" type="owner">
+  `revoke(agentId)`
+
+  Clears the binding and calls `vault.pauseFromRegistry`. The NFT stays with the owner. Emits `Revoked`.
+</ResponseField>
+
+<ResponseField name="releaseTransferred" type="anyone">
+  `releaseTransferred(agentId)`
+
+  Clears the binding after `ownerOf` has changed, and pauses the vault. Reverts with `OwnerUnchanged` if the NFT has not moved. Emits `Released`.
+</ResponseField>
+
+<ResponseField name="activeDevice" type="view">
+  `activeDevice(agentId) returns (address)`
+
+  The device allowed to pay and attest. Reverts `NotBound` or `OwnerChanged`.
+</ResponseField>
+
+<ResponseField name="deviceToAgent" type="view">
+  `deviceToAgent(device) returns (uint256 agentId, bool bound)`
+
+  `agentId` is meaningful only when `bound` is true. Agent ids can be zero.
+</ResponseField>
+
+<ResponseField name="ownerOfAgent" type="view">
+  `ownerOfAgent(agentId) returns (address)`
+
+  Forwards to `identity.ownerOf`. This contract does not store a competing owner.
+</ResponseField>
+
+<ResponseField name="hashClaim" type="view">
+  `hashClaim(device, owner, nonce, deadline) returns (bytes32)`
+
+  The EIP-712 digest the device signs. The runtime asks the contract for this rather than hashing locally.
+</ResponseField>
+
+<ResponseField name="setVault" type="deployer, once">
+  `setVault(vault)`
+
+  Wires DeviceVault. Reverts unless `msg.sender` is `deployer`, and reverts if a vault is already set or the new address is zero. Emits `VaultSet`.
+</ResponseField>
+
+`onERC721Received` accepts the agent NFT only from the Identity Registry, which is how `register` can mint to this contract for the length of `claim`.
+
+## Events
+
+| Event | When |
+| --- | --- |
+| `VaultSet(vault)` | The vault address is wired. |
+| `Claimed(agentId, owner, device)` | A new agent is minted and bound. |
+| `Linked(agentId, owner, device)` | A device is bound to an existing agent. |
+| `Rotated(agentId, previousDevice, device)` | The device key is replaced. |
+| `Revoked(agentId, device)` | The owner drops the device. |
+| `Released(agentId, device)` | A binding is cleared after the NFT moves. |
+
+## Errors
+
+| Error | Cause |
+| --- | --- |
+| `VaultUnset` | `claim` or `link` before `setVault`. |
+| `VaultAlreadySet` | A second `setVault`. |
+| `NotDeployer` | `setVault` from anyone else. |
+| `NotOwner` | Caller is not `ownerOf`. |
+| `DeviceIsOwner` | Device is zero or equal to the owner. |
+| `AlreadyBound` | The agent has a device, or the device is bound elsewhere. |
+| `NotBound` | No device to revoke, rotate, release, or read. |
+| `BadSignature` | Ticket signer is not the device. |
+| `Expired` | Deadline has passed. |
+| `DeadlineTooFar` | Deadline is more than one day out. |
+| `OwnerChanged` | `activeDevice` after the NFT moved. |
+| `OwnerUnchanged` | `releaseTransferred` before the NFT moved. |
+| `NotIdentity` | An NFT arrived from a contract other than the Identity Registry. |

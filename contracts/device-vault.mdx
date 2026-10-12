@@ -1,0 +1,129 @@
+---
+title: "DeviceVault"
+description: "The per-agent MON vault: caps, allowlist, pause, owner withdrawals, and device gas top-ups."
+icon: "vault"
+---
+
+`DeviceVault` holds one MON balance per agent id. The active device can pay an allowlisted recipient inside the caps. The owner can always withdraw, including while spending is paused. A plain transfer to the contract reverts, because a transfer does not name an agent.
+
+Address: [`0x77102fCAC7927bB64507DF82bf1ae659465B4EE5`](https://testnet.monadvision.com/address/0x77102fCAC7927bB64507DF82bf1ae659465B4EE5). How the rules feel from the device is in [Device Vault](/concepts/vault) and [Funding and gas](/operate/funding).
+
+EIP-712 domain: `DeviceVault` version `1`. Three structs share `loosenNonce(agentId)`:
+
+```solidity
+LoosenCaps(uint256 agentId, uint256 perTxCap, uint256 dailyCap, uint256 nonce, uint256 deadline)
+AllowRecipient(uint256 agentId, address recipient, uint256 nonce, uint256 deadline)
+Unpause(uint256 agentId, uint256 nonce, uint256 deadline)
+```
+
+`MAX_DEVICE_GAS` is 5 ether, in MON. A `topUpGas` call from the device cannot leave the device address holding more than that.
+
+## Functions
+
+<ResponseField name="deposit" type="anyone">
+  `deposit(agentId) payable`
+
+  Credits `msg.value` to that agent. The agent must already be initialized by `bindLimits`. Emits `Deposited`.
+</ResponseField>
+
+<ResponseField name="pay" type="active device">
+  `pay(agentId, recipient, amount)`
+
+  The only function that sends MON to a third party. Checks pause, allowlist, per-transaction cap, the rolling daily window, and balance, in that order. Emits `Paid`.
+</ResponseField>
+
+<ResponseField name="topUpGas" type="owner or active device">
+  `topUpGas(agentId, amount)`
+
+  Sends MON to the active device. Counts against the caps. Skips the allowlist. A device caller also hits `GasCap` when the device would end above 5 MON. Emits `GasToppedUp`.
+</ResponseField>
+
+<ResponseField name="withdraw" type="owner">
+  `withdraw(agentId, amount)`
+
+  Sends MON to the current owner. Ignores caps and pause. Emits `Withdrawn`.
+</ResponseField>
+
+<ResponseField name="tightenCaps" type="owner">
+  `tightenCaps(agentId, perTxCap, dailyCap)`
+
+  Both new caps must be less than or equal to the current ones, and at least one must be strictly lower. Emits `CapsTightened`.
+</ResponseField>
+
+<ResponseField name="loosenCaps" type="owner or owner signature">
+  `loosenCaps(agentId, perTxCap, dailyCap, deadline, signature)`
+
+  Both new caps must be greater than or equal, and at least one strictly greater. A direct call from the owner ignores the signature. Any other caller must present a valid `LoosenCaps` signature, which consumes `loosenNonce`. Emits `CapsLoosened`.
+</ResponseField>
+
+<ResponseField name="allowRecipient" type="owner or owner signature">
+  `allowRecipient(agentId, recipient, deadline, signature)`
+
+  Adds one recipient. Reverts `AlreadyAllowed` if it is already on the list. Emits `RecipientAllowed`.
+</ResponseField>
+
+<ResponseField name="disallowRecipient" type="owner">
+  `disallowRecipient(agentId, recipient)`
+
+  Removes one recipient. Emits `RecipientDisallowed`.
+</ResponseField>
+
+<ResponseField name="pause" type="owner">
+  `pause(agentId)`
+
+  Blocks `pay` and `topUpGas`. Withdrawals still work. Emits `SpendingPaused`.
+</ResponseField>
+
+<ResponseField name="unpause" type="owner or owner signature">
+  `unpause(agentId, deadline, signature)`
+
+  Reverts `NotPaused` if spending is already open. Emits `SpendingUnpaused`.
+</ResponseField>
+
+<ResponseField name="bindLimits" type="registry">
+  `bindLimits(agentId, perTxCap, dailyCap)`
+
+  Called by KineticRegistry from `claim` and `link`. The first call initializes the account unpaused and emits `Initialized`. A later call is a rebind: new caps, paused, allowlist cleared, daily window cleared, balance kept. Emits `Rebound`.
+</ResponseField>
+
+<ResponseField name="pauseFromRegistry" type="registry">
+  `pauseFromRegistry(agentId)`
+
+  Called by `revoke` and `releaseTransferred`.
+</ResponseField>
+
+## Views
+
+| View | Returns |
+| --- | --- |
+| `limitsOf(agentId)` | `(perTxCap, dailyCap, paused)` |
+| `balanceOf(agentId)` | MON held for this agent |
+| `spentToday(agentId)` | Spend in the current 24-hour window, or zero when the window has elapsed |
+| `isAllowed(agentId, recipient)` | Whether the recipient is allowlisted |
+| `loosenNonce(agentId)` | Nonce required in the next relayed owner signature |
+| `hashLoosenCaps` / `hashAllowRecipient` / `hashUnpause` | EIP-712 digests |
+
+The daily window starts at the first spend and lasts one day. It is not a calendar day.
+
+## Events
+
+`Initialized`, `Rebound`, `Deposited`, `Paid`, `GasToppedUp`, `Withdrawn`, `CapsTightened`, `CapsLoosened`, `RecipientAllowed`, `RecipientDisallowed`, `SpendingPaused`, `SpendingUnpaused`.
+
+## Errors
+
+| Error | Cause |
+| --- | --- |
+| `NotDevice` | `pay` from anyone but the active device. |
+| `NotOwner` | An owner-only call, or `topUpGas` from neither the owner nor the device. |
+| `NotRegistry` | `bindLimits` or `pauseFromRegistry` from anyone but KineticRegistry. |
+| `UnknownAgent` | The agent has never been bound. |
+| `Paused` | `pay` or `topUpGas` while paused. |
+| `NotPaused` | `unpause` while already open. |
+| `NotAllowlisted` | `pay` to an address that was not approved. |
+| `PerTxCap`, `DailyCap` | The amount does not fit the caps. |
+| `NotATighten`, `NotALoosen` | A cap change in the wrong direction, or a no-op. |
+| `AlreadyAllowed`, `NotAllowed` | Adding a recipient twice, or removing one that is absent. |
+| `GasCap` | A device `topUpGas` would leave the device above 5 MON. |
+| `BadSignature`, `Expired` | A relayed signature is wrong, or past its deadline. |
+| `InsufficientBalance`, `ZeroAmount`, `TransferFailed` | The balance, the amount, or the MON transfer failed. |
+| `ZeroAmount` on `receive` | A plain MON transfer, which cannot name an agent. |

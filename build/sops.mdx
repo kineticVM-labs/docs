@@ -1,0 +1,206 @@
+---
+title: "SOPs"
+description: "Standard operating procedures: triggered, ordered steps that call tools, with approvals, branching, retries, and deterministic execution."
+icon: "list-ordered"
+---
+
+A **SOP** (standard operating procedure) is how a machine does the same job the same way every time. It names what starts it, lists the steps in order, and says which tools each step may call. The SOP engine runs it, tracks each run, and enforces approvals.
+
+A SOP lives in a directory with two files:
+
+<CodeGroup>
+
+```toml SOP.toml
+[sop]
+name = "vend"
+description = "Vend a product after a valid keypad code."
+version = "0.1.0"
+priority = "high"
+execution_mode = "supervised"
+cooldown_secs = 0
+max_concurrent = 1
+agent = "device"
+
+[[triggers]]
+type = "peripheral"
+board = "esp32"
+signal = "keypad"
+
+[[triggers]]
+type = "manual"
+```
+
+```markdown SOP.md
+## Steps
+
+1. **Check the code** - Look up the code the customer typed.
+   - tools: check_code
+   - on_failure: fail
+
+2. **Vend** - Turn the motor for the returned slot.
+   - tools: gpio_write
+   - requires_confirmation: false
+
+3. **Record the sale** - Attest the vend with its record.
+   - tools: monad_attest
+   - terminal: true
+```
+
+</CodeGroup>
+
+SOPs installed by a plugin package go to `<sops_dir>/<package name>/`. The default directory is `~/.kinetic/sops`.
+
+## SOP.toml
+
+<ParamField path="sop.name" type="string" required>
+  The procedure name.
+</ParamField>
+
+<ParamField path="sop.description" type="string" required>
+  What it does. The model sees this when deciding whether to run it.
+</ParamField>
+
+<ParamField path="sop.priority" type="string" default="normal">
+  `low`, `normal`, `high`, or `critical`.
+</ParamField>
+
+<ParamField path="sop.execution_mode" type="string" default="supervised">
+  How much human approval the run needs:
+
+  | Mode | Behavior |
+  | --- | --- |
+  | `auto` | Runs every step without approval. |
+  | `supervised` | Asks for approval before starting, then runs every step. |
+  | `step_by_step` | Asks for approval before each step. |
+  | `priority_based` | `critical` and `high` run as `auto`. `normal` and `low` run as `supervised`. |
+  | `deterministic` | Runs steps in order with no model round-trips. Each step's output is piped to the next. Checkpoint steps pause for approval. |
+</ParamField>
+
+<ParamField path="sop.cooldown_secs" type="integer" default="0">
+  Minimum time between runs.
+</ParamField>
+
+<ParamField path="sop.max_concurrent" type="integer" default="1">
+  How many runs may be active at once.
+</ParamField>
+
+<ParamField path="sop.admission_policy" type="string" default="parallel">
+  What happens when a trigger fires and no run slot is free: `parallel` defers it, `hold` admits only when no run of this SOP is active, `coalesce` drops it because the in-flight run covers it, `drop` discards it.
+</ParamField>
+
+<ParamField path="sop.agent" type="string">
+  The agent alias that owns runs. **Required** when any trigger other than `manual` can start the SOP, because a hardware event or a cron tick has no conversation to borrow an agent from. Quickstart names the agent `device`.
+</ParamField>
+
+## Triggers
+
+A SOP can have several `[[triggers]]`. Any one of them starts a run.
+
+<Tabs>
+  <Tab title="peripheral" icon="microchip">
+    A board sent `{"event":"message","signal":"keypad","text":"1234"}` over serial. Matched as `board/signal`. The text is the payload.
+
+    ```toml
+    [[triggers]]
+    type = "peripheral"
+    board = "esp32"
+    signal = "keypad"
+    condition = "> 0"
+    ```
+  </Tab>
+  <Tab title="manual" icon="hand">
+    Started by the agent with the `sop_execute` tool, for example because someone asked in Telegram.
+
+    ```toml
+    [[triggers]]
+    type = "manual"
+    ```
+  </Tab>
+  <Tab title="cron" icon="clock">
+    ```toml
+    [[triggers]]
+    type = "cron"
+    expression = "*/15 * * * *"
+    ```
+  </Tab>
+  <Tab title="webhook" icon="webhook">
+    An HTTP request to the gateway on an exact path.
+
+    ```toml
+    [[triggers]]
+    type = "webhook"
+    path = "/restock"
+    ```
+  </Tab>
+  <Tab title="mqtt" icon="radio">
+    ```toml
+    [[triggers]]
+    type = "mqtt"
+    topic = "farm/+/soil"
+    condition = "$.moisture < 20"
+    ```
+  </Tab>
+</Tabs>
+
+The runtime also supports `filesystem` (path glob and change kinds), `channel` (an inbound message on a channel), and `amqp` (routing key) triggers.
+
+**Conditions** filter a trigger against its payload. `$.path.to.field >= 85` reads a JSON field. A bare comparison such as `> 0` treats the whole payload as a number. An empty condition always matches. A condition that cannot be evaluated does not match.
+
+## Steps
+
+`SOP.md` must contain a `## Steps` section. Each numbered item is a step. Leading bold text is the step title, and the rest of the line is its body. Sub-bullets set step properties:
+
+| Bullet | Meaning |
+| --- | --- |
+| `tools:` | Comma-separated tools the step should use. |
+| `allow-tools:` / `deny-tools:` | Hard per-step tool allow and deny lists. |
+| `requires_confirmation: true` | The step needs approval, in any execution mode. |
+| `kind:` | `execute` (default), `checkpoint`, or `capability`. A checkpoint pauses a deterministic run for approval. |
+| `call:` | A planned tool call as JSON, such as `{"tool":"gpio_write","args":{"pin":13,"value":1}}`. |
+| `input:` / `output:` | JSON Schema-like contracts checked at the step boundary. |
+| `when:` | A guard over earlier step outputs. If false, routing falls through to the next step. |
+| `next:` | Jump to an explicit step number. |
+| `switch:` | Ordered `name>condition>step` ports. The first match wins. |
+| `depends_on:` | Prerequisite steps for non-linear runs. |
+| `terminal: true` | Finish the run after this step. |
+| `on_failure:` | `fail`, `retry:<count>`, or `goto:<step>`. |
+| `mode:` / `agent:` | Override the execution mode or the agent for this step. |
+| `prompt:` | The text shown on this step's approval request. |
+| `decide:` / `unless_decided:` | A yes or no question answered about the triggering event when the run starts. The step runs only on yes, or is skipped when another step's question was yes. |
+
+Any other sub-bullet is added to the step body as instructions.
+
+### Passing data between steps
+
+A planned call's arguments can refer to output captured from earlier steps with `{{steps.N.path}}`, or to an earlier call in the same step with `{{calls.K.path}}`:
+
+```markdown
+2. **Vend** - Drive the slot motor.
+   - call: {"tool":"gpio_write","args":{"pin":"{{steps.1.slot}}","value":1}}
+```
+
+## Ending with an attestation
+
+A procedure that completes a business operation should end by calling `monad_attest` with the operation record. With a [record schema](/concepts/records) configured, the record is checked, canonicalized, attested, and stored as one line. That line is what the owner can later [list for sale](/marketplace/listing).
+
+```markdown
+4. **Record the sale** - Attest the completed vend.
+   - tools: monad_attest
+   - terminal: true
+   - Use action "vend", request_uri "kinetic://sop/vend", and params with product, slot, and price_mon from the earlier steps.
+```
+
+## Inspecting runs
+
+```bash
+kinetic sop list              # loaded procedures
+kinetic sop validate vend     # check a definition
+kinetic sop show vend         # triggers and parsed steps
+kinetic sop graph vend        # the step graph as text
+kinetic sop pending           # runs waiting for approval
+kinetic sop approve <run-id>
+kinetic sop deny <run-id>
+kinetic sop logs <run-id>
+```
+
+`pending`, `approve`, `deny`, and `logs` talk to the running daemon. The agent can also check runs with the `sop_status` tool and approve a waiting step with `sop_approve`.

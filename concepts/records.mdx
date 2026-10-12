@@ -1,0 +1,140 @@
+---
+title: "Operation records"
+description: "How a builder declares the shape of a machine's work, and how each completed operation becomes one canonical line that is signed, attested, stored, and later sellable."
+icon: "file-spreadsheet"
+---
+
+An attestation proves that a device signed some bytes. An **operation record** makes those bytes useful: a structured, canonical JSON line describing one unit of the machine's work, such as one vend, one pick, or one soil reading, where the attested `paramsHash` is exactly the keccak256 of that line.
+
+Records are what turn a machine's history into a dataset a stranger can buy and [verify line by line](/marketplace/verification).
+
+## Declaring a schema
+
+A builder declares the fields of an operation in the device config under `[records]`:
+
+```toml config.toml
+[[records.fields]]
+name = "product"
+type = "string"
+
+[[records.fields]]
+name = "price_mon"
+type = "number"
+
+[[records.fields]]
+name = "slot"
+type = "number"
+
+[[records.fields]]
+name = "note"
+type = "string"
+required = false
+```
+
+<ParamField path="name" type="string" required>
+  Letters, digits, and underscores. Must not start with a digit. At most 64 characters. Unique within the schema.
+</ParamField>
+
+<ParamField path="type" type="string" default="string">
+  One of `string`, `number`, `boolean`, `object`, `array`.
+</ParamField>
+
+<ParamField path="required" type="boolean" default="true">
+  Whether every record must include this field.
+</ParamField>
+
+A plugin package can ship its schema as `records.example.toml`. `kinetic plugin install` writes it into the device config and **replaces** any existing record fields. See [Plugins](/build/plugins#install-a-package).
+
+<Info>
+  With no fields declared, recording is **off**. `monad_attest` still attests, signing the `params` string exactly as given, but nothing is stored and nothing can be listed.
+</Info>
+
+## From operation to line
+
+When the agent calls [`monad_attest`](/reference/agent-tools#monad_attest) and a schema is configured, the host prepares the record before anything is signed.
+
+<Steps>
+  <Step title="Parse">
+    `params` must be a JSON object. Anything else is refused.
+  </Step>
+  <Step title="Check against the schema">
+    Every key must be a declared field. Every required field must be present. Every value must match its declared type.
+  </Step>
+  <Step title="Canonicalize">
+    Keys are sorted, recursively inside nested objects, and the object is serialized as compact JSON on a single line. Whitespace and key order in the input no longer matter.
+  </Step>
+  <Step title="Attest">
+    The device signs an `ActionProof` whose `paramsHash` is keccak256 of that exact line, and submits it to `KineticAttestor`.
+  </Step>
+  <Step title="Store">
+    Only after the transaction succeeds, the line is appended to `records/operations.jsonl`, and the attestation's request hash is appended to the sibling `records/operation-requests.txt`.
+  </Step>
+</Steps>
+
+For example, both of these inputs:
+
+<CodeGroup>
+
+```json Input A
+{"slot": 4, "product": "Sparkling water", "price_mon": 0.02}
+```
+
+```json Input B
+{
+  "price_mon": 0.02,
+  "product": "Sparkling water",
+  "slot": 4
+}
+```
+
+</CodeGroup>
+
+produce the same stored and signed line:
+
+```json operations.jsonl
+{"price_mon":0.02,"product":"Sparkling water","slot":4}
+```
+
+## The two files
+
+<Tree>
+  <Tree.Folder name="~/.kinetic" defaultOpen>
+    <Tree.Folder name="records" defaultOpen>
+      <Tree.File name="operations.jsonl" />
+      <Tree.File name="operation-requests.txt" />
+    </Tree.Folder>
+  </Tree.Folder>
+</Tree>
+
+| File | Contents |
+| --- | --- |
+| `operations.jsonl` | One canonical record per line, in attestation order. |
+| `operation-requests.txt` | One lowercase `0x` request hash per line, aligned with `operations.jsonl`. Line *n* of one belongs to line *n* of the other. |
+
+The directory is created owner-only (`0700`) and both files are `0600`. Writes are append-only and locked, so concurrent operations never interleave.
+
+## Privacy
+
+<Warning>
+  The host stores exactly the fields the builder declared, and nothing else. It does not add chat ids, wallet addresses, Telegram usernames, or access codes. Do not declare fields for personal data. Anything in a record can end up in a listed dataset.
+</Warning>
+
+The record schema is also the privacy boundary: if a value is not a declared field, the agent cannot put it in a record, because the host refuses the whole record.
+
+## Listing limits
+
+When the owner sells data, the runtime reads both files and checks them before anything leaves the device:
+
+| Check | Limit or rule |
+| --- | --- |
+| Row count | At most 5,000 records |
+| File size | At most 20 MB |
+| Alignment | Same number of lines in both files |
+| Lines | No blank lines |
+| Request hashes | Each must be a 32-byte hash, and none may repeat |
+
+A file that fails any check is not listed. The full flow is in [Data listing](/marketplace/listing).
+
+## Why canonical lines matter
+
+Because the signed bytes and the stored bytes are the same line, a buyer does not need to trust the seller's export. For each line they compute `keccak256(line)` and compare it to the `responseHash` stored in the ERC-8004 Validation Registry for that row's request hash. One edited character breaks the match.

@@ -1,0 +1,113 @@
+---
+title: "Vending machine"
+description: "Turn a claimed device into a four-slot vending machine: a record schema, a procedure, a keypad event, and an attestation for every sale."
+icon: "cup-soda"
+---
+
+This tutorial builds the smallest machine that does all three KineticVM jobs. It takes payment authority from the vault, it moves a pin, and it leaves a signed record of the sale.
+
+You need a claimed device from the [quickstart](/quickstart), with `[chain]` enabled, and a board that can drive one output pin. The ESP32 starter in `firmware/esp32` already answers `gpio_write` on pins 2 and 13.
+
+## Decide the record
+
+One sale is one line. Put this in the device config, or in `records.example.toml` if you are shipping a package:
+
+```toml
+[[records.fields]]
+name = "product"
+type = "string"
+
+[[records.fields]]
+name = "slot"
+type = "number"
+
+[[records.fields]]
+name = "price_mon"
+type = "number"
+```
+
+Leave the keypad code out. The host refuses fields that are not in this list, which is what keeps a code or a chat id out of a dataset you might sell later. See [Operation records](/concepts/records).
+
+## Write the procedure
+
+Create `~/.kinetic/sops/vend/SOP.toml` and `SOP.md`, or let `kinetic plugin create ./vending` write the starter and replace it.
+
+```toml SOP.toml
+[sop]
+name = "vend"
+description = "Vend one product after a keypad code and record the sale."
+version = "0.1.0"
+priority = "high"
+execution_mode = "supervised"
+agent = "device"
+
+[[triggers]]
+type = "peripheral"
+board = "esp32"
+signal = "keypad"
+
+[[triggers]]
+type = "manual"
+```
+
+`agent` is required because the keypad trigger has no Telegram turn to borrow an agent from. Quickstart names that agent `device`.
+
+```markdown SOP.md
+## Steps
+
+1. **Check the code** - Map the keypad text to a slot. Refuse an unknown code and do not continue.
+   - tools: check_code
+
+2. **Vend** - Drive the motor pin for that slot, then turn it off.
+   - tools: gpio_write
+   - on_failure: fail
+
+3. **Record the sale** - Call monad_attest only after the motor command succeeded.
+   - tools: monad_attest
+   - terminal: true
+```
+
+Step 3 is the one that makes the sale provable. Tell the model, in the step body or in a [skill](/build/skills), to call `monad_attest` with:
+
+| Argument | Value |
+| --- | --- |
+| `action` | `vend` |
+| `request_uri` | `kinetic://sop/vend` |
+| `params` | JSON with `product`, `slot`, and `price_mon` |
+
+The host canonicalizes that object, signs the line, and appends it only after the transaction succeeds.
+
+`check_code` is your tool. The [first plugin](/tutorials/first-plugin) tutorial is how you compile and install it. Until that tool exists, you can run the procedure manually from Telegram and have the model choose the slot itself. Do not attest a sale the motor step did not finish.
+
+## Connect the keypad
+
+In `firmware/esp32/src/main.rs`, `take_host_message` returns nothing. When the customer presses enter, return one message and then nothing until the next code:
+
+```json
+{"event":"message","signal":"keypad","text":"1234"}
+```
+
+The daemon matches `board = "esp32"` and `signal = "keypad"`. Returning the same message on every idle poll starts a new run on every poll. The protocol and the default serial ports are in [Hardware and firmware](/build/hardware).
+
+## Let it pay, if a sale takes MON
+
+A vend that pays a supplier uses `vault_pay`. Two things have to be true first:
+
+1. The vault holds MON. `/deposit` in Telegram opens the deposit page.
+2. The supplier address is allowlisted. `/approve 0x…` returns a digest. Sign it with the owner wallet and send the signature back. The flow is in [Telegram owner commands](/operate/telegram#the-signing-flow).
+
+`vault_pay` asks for approval in the chat before it runs. The vault still enforces the caps and the allowlist if that approval is given.
+
+## Watch a sale land
+
+After a vend, `/status` lists the attestation transaction. On the device, the same sale is one line:
+
+```json
+{"price_mon":0.02,"product":"Sparkling water","slot":4}
+```
+
+in `~/.kinetic/records/operations.jsonl`, with the request hash on the same line number in `operation-requests.txt`.
+
+<Tip>
+  `execution_mode = "supervised"` asks the paired chat before the run starts. Switch to `auto` only after you have watched a few sales and the caps are amounts you can lose.
+</Tip>

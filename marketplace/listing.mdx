@@ -1,0 +1,89 @@
+---
+title: "Data listing"
+description: "Publish a device's operation records from Telegram or from the sell_data tool, and what the marketplace checks before the listing goes up."
+icon: "upload"
+---
+
+Listing is an owner action. The paired Telegram chat sends `/sell_data`. If `marketplace.key` is set, the message reaches the model, which asks for any listing detail it does not already know and then calls the `sell_data` tool. The device builds the files. The marketplace checks that they agree with each other and that the key's wallet still owns the agent, then pins them.
+
+<Info>
+  Without a key, `/sell_data` stops and tells the owner to get one at [marketplace.kineticvm.xyz](https://marketplace.kineticvm.xyz) and run `kinetic config set marketplace.key`.
+</Info>
+
+## What you tell the device
+
+| Field | Rule |
+| --- | --- |
+| `title` | Required. At most 80 characters. No line breaks. |
+| `summary` | Required. At most 180 characters. No line breaks. |
+| `description` | 20 to 8,000 characters. |
+| `machine_type` | `vending`, `arm`, `drone`, `amr`, `sensor`, `humanoid`, or `other`. |
+| `license` | `research`, `commercial`, or `audit`. |
+| `price_mon` | A MON amount greater than zero, such as `1.5`. |
+
+The model is instructed not to guess the price. Licenses mean:
+
+| License | Buyer may | Buyer may not |
+| --- | --- | --- |
+| `research` | Train and evaluate models | Resell the raw file |
+| `commercial` | Train products they ship | Resell the raw file |
+| `audit` | Review the records | Use them to train a model |
+
+## What leaves the device
+
+`sell_data` only runs when the device is claimed on chain id **10143**. It reads `records/operations.jsonl` and `records/operation-requests.txt` and refuses the listing when:
+
+- there are no records,
+- the request-hash file is missing or has a different number of lines,
+- a line is blank, or a request hash is not a 32-byte hash,
+- a request hash is repeated,
+- there are more than **5,000** rows, or the data is larger than **20 MB**.
+
+It then builds a manifest and posts both files:
+
+```json manifest.json
+{
+  "version": 1,
+  "chainId": 10143,
+  "agentId": "2005",
+  "rows": [
+    {
+      "paramsHash": "0xabc…",
+      "requestHash": "0xdef…"
+    }
+  ]
+}
+```
+
+`paramsHash` is keccak256 of that line of `operations.jsonl`. `requestHash` is the hash `KineticAttestor` wrote into the Validation Registry. The post is multipart `POST {marketplace}/api/agent/listings` with a bearer key. Fields are `title`, `summary`, `description`, `machineType`, `license`, `priceMon`, plus the two files. An optional cover image is accepted by the API. The device does not send one.
+
+## What the marketplace checks
+
+Before anything is pinned, the marketplace:
+
+<Steps>
+  <Step title="Authenticates the key">
+    The key must be a live `kvm_` secret for chain 10143.
+  </Step>
+  <Step title="Checks the files against each other">
+    Same number of lines and rows. Each line is one JSON object. keccak256 of the line equals that row's `paramsHash`. The manifest's agent id matches the key's agent.
+  </Step>
+  <Step title="Rechecks ownership">
+    It reads `ownerOf` again. If the NFT has moved, it revokes stale keys and refuses the listing.
+  </Step>
+  <Step title="Pins and publishes">
+    The manifest and the data file are pinned through Pinata. The response is the public path, with no CIDs in it. The on-chain attestation check is a separate call, documented in [Buyer verification](/marketplace/verification), and anyone can run it before paying.
+  </Step>
+</Steps>
+
+The device replies with the listing URL:
+
+```text
+Listed 128 records. https://marketplace.kineticvm.xyz/marketplace/<slug>
+```
+
+<Warning>
+  Installing another plugin replaces `[records]` in the device config. Records already stored stay in the file, but new lines follow the new schema. List a dataset before you replace the schema if the old lines are what you want to sell.
+</Warning>
+
+Payout is the wallet stored on the key, or the payout address saved in marketplace settings when that address is the one allowed for this owner. The device does not choose a payout address.
