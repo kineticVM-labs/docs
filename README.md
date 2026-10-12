@@ -10,4 +10,4 @@ Local preview:
 npx mint dev
 ```
 
-The logo files are `logo/light.svg` and `logo/dark.svg`. The default theme is dark, and the theme toggle stays on.
+The logo files are `logo/light.svg` and `logo/dark.svg`. The default theme is light, and the theme toggle stays on.

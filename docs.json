@@ -15,7 +15,7 @@
   },
   "favicon": "/favicon.png",
   "appearance": {
-    "default": "dark",
+    "default": "light",
     "strict": false
   },
   "background": {
